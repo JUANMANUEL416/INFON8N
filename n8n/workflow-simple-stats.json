@@ -1,0 +1,144 @@
+{
+  "name": "Cargar Excel - Simple",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-trigger",
+      "name": "When clicking 'Test workflow'",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:5000/upload",
+        "sendQuery": false,
+        "sendHeaders": false,
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "type",
+              "value": "facturas"
+            }
+          ]
+        },
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "cargar-facturas",
+      "name": "Cargar Facturas (simulado)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [460, 200]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:5000/upload",
+        "sendQuery": false,
+        "sendHeaders": false,
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "type",
+              "value": "cartera"
+            }
+          ]
+        },
+        "options": {
+          "allowUnauthorizedCerts": true
+        }
+      },
+      "id": "cargar-cartera",
+      "name": "Cargar Cartera (simulado)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [460, 400]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:5000/stats",
+        "options": {}
+      },
+      "id": "obtener-stats",
+      "name": "Obtener Estadísticas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const stats = $input.first().json;\n\nreturn [\n  {\n    json: {\n      mensaje: `✅ Sistema funcionando correctamente`,\n      facturas: {\n        total: stats.facturas.total,\n        monto: `$${parseFloat(stats.facturas.monto_total).toLocaleString('es-ES', {minimumFractionDigits: 2})}`\n      },\n      cartera_vencida: {\n        total: stats.cartera_vencida.vencidas,\n        monto: `$${parseFloat(stats.cartera_vencida.monto_vencido).toLocaleString('es-ES', {minimumFractionDigits: 2})}`\n      },\n      porcentaje_vencido: `${((parseFloat(stats.cartera_vencida.monto_vencido) / parseFloat(stats.facturas.monto_total)) * 100).toFixed(2)}%`\n    }\n  }\n];"
+      },
+      "id": "formatear-resultado",
+      "name": "Formatear Resultado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    }
+  ],
+  "connections": {
+    "When clicking 'Test workflow'": {
+      "main": [
+        [
+          {
+            "node": "Cargar Facturas (simulado)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Cargar Cartera (simulado)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cargar Facturas (simulado)": {
+      "main": [
+        [
+          {
+            "node": "Obtener Estadísticas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cargar Cartera (simulado)": {
+      "main": [
+        [
+          {
+            "node": "Obtener Estadísticas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Obtener Estadísticas": {
+      "main": [
+        [
+          {
+            "node": "Formatear Resultado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2026-02-02T10:00:00.000Z",
+  "versionId": "1"
+}

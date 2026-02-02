@@ -1,0 +1,103 @@
+version: "3.8"
+
+services:
+  # PostgreSQL - Base de datos principal
+  postgres:
+    image: postgres:15-alpine
+    container_name: devprueba-postgres
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: informes_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - devprueba-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Chroma - Vector Database
+  chroma:
+    image: chromadb/chroma:latest
+    container_name: devprueba-chroma
+    environment:
+      CHROMA_DB_IMPL: duckdb+parquet
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma_data:/chroma/data
+    networks:
+      - devprueba-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # n8n - Workflow Automation
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: devprueba-n8n
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=admin123
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=informes_db
+      - DB_POSTGRESDB_USER=admin
+      - DB_POSTGRESDB_PASSWORD=admin123
+      - WEBHOOK_URL=http://localhost:5678/
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./data:/app/data
+      - ./n8n:/app/n8n
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - devprueba-net
+
+  # Python Backend - Procesador de datos
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: devprueba-backend
+    ports:
+      - "5000:5000"
+    environment:
+      - DB_HOST=postgres
+      - DB_USER=admin
+      - DB_PASSWORD=admin123
+      - DB_NAME=informes_db
+      - DB_PORT=5432
+      - FLASK_ENV=development
+    volumes:
+      - ./data:/app/data
+      - ./scripts:/app/scripts
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - devprueba-net
+
+volumes:
+  postgres_data:
+  chroma_data:
+  n8n_data:
+
+networks:
+  devprueba-net:
+    driver: bridge

@@ -1,0 +1,80 @@
+{
+  "name": "Reporte Diario Automático",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cron-diario",
+      "name": "Cada día a las 9 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:5000/stats",
+        "options": {}
+      },
+      "id": "obtener-estadisticas",
+      "name": "Obtener Estadísticas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const stats = $input.item.json;\nconst fecha = new Date().toLocaleDateString('es-ES');\n\nconst reporte = `\n📊 REPORTE DIARIO - ${fecha}\n\n💵 FACTURACIÓN:\n   • Total facturas: ${stats.facturas.total}\n   • Monto total: $${parseFloat(stats.facturas.monto_total).toLocaleString('es-ES', {minimumFractionDigits: 2})}\n\n⚠️ CARTERA VENCIDA:\n   • Facturas vencidas: ${stats.cartera_vencida.vencidas}\n   • Monto adeudado: $${parseFloat(stats.cartera_vencida.monto_vencido).toLocaleString('es-ES', {minimumFractionDigits: 2})}\n\n📈 INDICADORES:\n   • % Cartera vencida: ${((parseFloat(stats.cartera_vencida.monto_vencido) / parseFloat(stats.facturas.monto_total)) * 100).toFixed(2)}%\n`;\n\nreturn {\n  json: {\n    reporte: reporte,\n    fecha: fecha,\n    ...stats\n  }\n};"
+      },
+      "id": "generar-reporte",
+      "name": "Generar Reporte",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [690, 300]
+    }
+  ],
+  "connections": {
+    "Cada día a las 9 AM": {
+      "main": [
+        [
+          {
+            "node": "Obtener Estadísticas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Obtener Estadísticas": {
+      "main": [
+        [
+          {
+            "node": "Generar Reporte",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generar Reporte": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2026-02-02T00:00:00.000Z",
+  "versionId": "1"
+}

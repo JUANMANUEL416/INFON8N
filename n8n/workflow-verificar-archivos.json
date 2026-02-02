@@ -1,0 +1,88 @@
+{
+  "name": "Verificar Archivos y Cargar",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "manual-start",
+      "name": "Inicio Manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "command": "ls -1 /app/data/*.xlsx"
+      },
+      "id": "listar-archivos",
+      "name": "Listar Archivos",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const output = $input.first().json.stdout;\nconst archivos = output.split('\\n').filter(f => f.trim());\n\nreturn archivos.map(archivo => ({\n  json: {\n    archivo: archivo,\n    nombre: archivo.split('/').pop(),\n    tipo: archivo.includes('facturas') ? 'facturas' : archivo.includes('cartera') ? 'cartera' : 'otros'\n  }\n}));"
+      },
+      "id": "procesar-lista",
+      "name": "Procesar Lista",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:5000/stats",
+        "options": {}
+      },
+      "id": "ver-estadisticas",
+      "name": "Ver Estadísticas Actuales",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [900, 300]
+    }
+  ],
+  "connections": {
+    "Inicio Manual": {
+      "main": [
+        [
+          {
+            "node": "Listar Archivos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Listar Archivos": {
+      "main": [
+        [
+          {
+            "node": "Procesar Lista",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Procesar Lista": {
+      "main": [
+        [
+          {
+            "node": "Ver Estadísticas Actuales",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2026-02-02T10:00:00.000Z",
+  "versionId": "1"
+}

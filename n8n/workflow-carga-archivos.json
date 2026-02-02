@@ -1,0 +1,194 @@
+{
+  "name": "Cargar Archivos Excel a BD",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "start-manual",
+      "name": "Inicio Manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "path": "/app/data",
+        "fileSelector": "*.xlsx"
+      },
+      "id": "listar-archivos",
+      "name": "Buscar Archivos Excel",
+      "type": "n8n-nodes-base.readBinaryFiles",
+      "typeVersion": 1,
+      "position": [470, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.fileName}}",
+              "operation": "contains",
+              "value2": "facturas"
+            }
+          ]
+        }
+      },
+      "id": "es-facturas",
+      "name": "¿Es Facturas?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [690, 200]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{$json.fileName}}",
+              "operation": "contains",
+              "value2": "cartera"
+            }
+          ]
+        }
+      },
+      "id": "es-cartera",
+      "name": "¿Es Cartera?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [690, 400]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:5000/upload",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "type",
+              "value": "facturas"
+            }
+          ]
+        },
+        "sendBinaryData": true,
+        "binaryPropertyName": "data"
+      },
+      "id": "cargar-facturas",
+      "name": "Cargar Facturas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [910, 100]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:5000/upload",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "type",
+              "value": "cartera"
+            }
+          ]
+        },
+        "sendBinaryData": true,
+        "binaryPropertyName": "data"
+      },
+      "id": "cargar-cartera",
+      "name": "Cargar Cartera",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [910, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:5000/stats",
+        "options": {}
+      },
+      "id": "obtener-stats",
+      "name": "Obtener Estadísticas",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 3,
+      "position": [1130, 200]
+    }
+  ],
+  "connections": {
+    "Inicio Manual": {
+      "main": [
+        [
+          {
+            "node": "Buscar Archivos Excel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar Archivos Excel": {
+      "main": [
+        [
+          {
+            "node": "¿Es Facturas?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "¿Es Cartera?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Es Facturas?": {
+      "main": [
+        [
+          {
+            "node": "Cargar Facturas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Es Cartera?": {
+      "main": [
+        [
+          {
+            "node": "Cargar Cartera",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cargar Facturas": {
+      "main": [
+        [
+          {
+            "node": "Obtener Estadísticas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cargar Cartera": {
+      "main": [
+        [
+          {
+            "node": "Obtener Estadísticas",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2026-02-02T00:00:00.000Z",
+  "versionId": "1"
+}
