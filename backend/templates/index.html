@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sistema de Carga de Informes</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>📊 Sistema de Carga de Informes Gerenciales</h1>
+        <p class="subtitle">Cargue sus datos de forma sencilla y segura</p>
+      </header>
+
+      <div class="main-content">
+        <!-- Sección 1: Descargar Plantillas -->
+        <section class="card">
+          <h2>📥 1. Descargar Plantillas</h2>
+          <p>
+            Descargue la plantilla que necesite, ábrala con Excel y complete los
+            datos.
+          </p>
+
+          <div class="templates-grid">
+            <div class="template-card">
+              <div class="template-icon">📊</div>
+              <h3>Facturación Diaria</h3>
+              <p>Para cargar facturas del día</p>
+              <button
+                onclick="downloadTemplate('facturas')"
+                class="btn btn-primary"
+              >
+                Descargar Plantilla
+              </button>
+            </div>
+
+            <div class="template-card">
+              <div class="template-icon">💰</div>
+              <h3>Cartera Vencida</h3>
+              <p>Cuentas por cobrar</p>
+              <button
+                onclick="downloadTemplate('cartera')"
+                class="btn btn-primary"
+              >
+                Descargar Plantilla
+              </button>
+            </div>
+
+            <div class="template-card">
+              <div class="template-icon">📦</div>
+              <h3>Ventas Productos</h3>
+              <p>Ventas por producto</p>
+              <button
+                onclick="downloadTemplate('productos')"
+                class="btn btn-primary"
+              >
+                Descargar Plantilla
+              </button>
+            </div>
+
+            <div class="template-card">
+              <div class="template-icon">💸</div>
+              <h3>Gastos Operativos</h3>
+              <p>Gastos del día</p>
+              <button
+                onclick="downloadTemplate('gastos')"
+                class="btn btn-primary"
+              >
+                Descargar Plantilla
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <!-- Sección 2: Subir Archivos -->
+        <section class="card">
+          <h2>📤 2. Subir Archivo Completado</h2>
+          <p>Seleccione el tipo de datos y suba el archivo Excel completado.</p>
+
+          <div class="upload-section">
+            <div class="form-group">
+              <label for="dataType">Tipo de datos:</label>
+              <select id="dataType" class="form-control">
+                <option value="facturas">Facturación Diaria</option>
+                <option value="cartera">Cartera Vencida</option>
+                <option value="productos">Ventas Productos</option>
+                <option value="gastos">Gastos Operativos</option>
+              </select>
+            </div>
+
+            <div class="dropzone" id="dropzone">
+              <div class="dropzone-content">
+                <span class="upload-icon">📁</span>
+                <p>Arrastre el archivo aquí o haga clic para seleccionar</p>
+                <p class="file-info">Solo archivos .xlsx</p>
+              </div>
+              <input
+                type="file"
+                id="fileInput"
+                accept=".xlsx"
+                style="display: none"
+              />
+            </div>
+
+            <div id="fileInfo" class="file-selected" style="display: none">
+              <p>
+                <strong>Archivo seleccionado:</strong>
+                <span id="fileName"></span>
+              </p>
+              <button onclick="uploadFile()" class="btn btn-success">
+                Subir Archivo
+              </button>
+              <button onclick="clearFile()" class="btn btn-secondary">
+                Cancelar
+              </button>
+            </div>
+
+            <div id="uploadProgress" class="progress-bar" style="display: none">
+              <div class="progress-fill"></div>
+              <p class="progress-text">Procesando...</p>
+            </div>
+
+            <div id="uploadResult" class="alert" style="display: none"></div>
+          </div>
+        </section>
+
+        <!-- Sección 3: Estadísticas -->
+        <section class="card">
+          <h2>📈 3. Estadísticas del Sistema</h2>
+          <button onclick="loadStats()" class="btn btn-info">
+            Actualizar Estadísticas
+          </button>
+
+          <div id="statsContainer" class="stats-grid">
+            <p class="loading-text">
+              Haga clic en "Actualizar Estadísticas" para ver los datos
+            </p>
+          </div>
+        </section>
+      </div>
+
+      <footer>
+        <p>Sistema de Informes Gerenciales v1.0 | 2026</p>
+      </footer>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

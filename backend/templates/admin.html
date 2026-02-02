@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Panel de Administración - Reportes</title>
+    <link rel="stylesheet" href="/static/admin.css?v=2" />
+  </head>
+  <body>
+    <div class="admin-container">
+      <nav class="sidebar">
+        <div class="logo">
+          <h2>🔧 Admin Panel</h2>
+        </div>
+        <ul class="menu">
+          <li class="active" data-section="reportes">
+            <span>📊</span> Gestión de Reportes
+          </li>
+          <li data-section="datos"><span>💾</span> Ver Datos</li>
+          <li data-section="usuarios"><span>👥</span> Usuarios</li>
+        </ul>
+        <div class="user-info">
+          <p>👤 Administrador</p>
+          <a href="/">← Portal Usuario</a>
+        </div>
+      </nav>
+
+      <main class="content">
+        <!-- Sección: Gestión de Reportes -->
+        <section id="reportes-section" class="section active">
+          <header class="section-header">
+            <h1>📊 Gestión de Reportes</h1>
+            <button class="btn btn-primary" onclick="abrirModalNuevoReporte()">
+              + Crear Nuevo Reporte
+            </button>
+          </header>
+
+          <div id="reportes-grid" class="reportes-grid">
+            <!-- Los reportes se cargan aquí dinámicamente -->
+          </div>
+        </section>
+
+        <!-- Sección: Ver Datos -->
+        <section id="datos-section" class="section">
+          <header class="section-header">
+            <h1>💾 Datos Cargados</h1>
+          </header>
+          <div id="datos-content">
+            <p>Selecciona un reporte en la sección anterior</p>
+          </div>
+        </section>
+
+        <!-- Sección: Usuarios -->
+        <section id="usuarios-section" class="section">
+          <header class="section-header">
+            <h1>👥 Gestión de Usuarios</h1>
+          </header>
+          <p>En desarrollo...</p>
+        </section>
+      </main>
+    </div>
+
+    <!-- Modal: Nuevo Reporte -->
+    <div id="modal-nuevo-reporte" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Crear Nuevo Reporte</h2>
+          <button class="close-btn" onclick="cerrarModal()">&times;</button>
+        </div>
+
+        <div class="modal-body">
+          <form id="form-nuevo-reporte">
+            <!-- Información Básica -->
+            <div class="form-section">
+              <h3>📝 Información Básica</h3>
+
+              <div class="form-group">
+                <label>Nombre del Reporte *</label>
+                <input
+                  type="text"
+                  name="nombre"
+                  required
+                  placeholder="Ej: Facturación Diaria"
+                />
+              </div>
+
+              <div class="form-group">
+                <label>Código (sin espacios) *</label>
+                <input
+                  type="text"
+                  name="codigo"
+                  required
+                  placeholder="Ej: facturacion_diaria"
+                />
+                <small
+                  >Este código será usado internamente. No se puede cambiar
+                  después.</small
+                >
+              </div>
+
+              <div class="form-row">
+                <div class="form-group">
+                  <label>Categoría</label>
+                  <select name="categoria">
+                    <option value="finanzas">Finanzas</option>
+                    <option value="ventas">Ventas</option>
+                    <option value="operaciones">Operaciones</option>
+                    <option value="rrhh">Recursos Humanos</option>
+                    <option value="otros">Otros</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label>Icono (emoji)</label>
+                  <input type="text" name="icono" value="📊" maxlength="2" />
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label>Descripción</label>
+                <textarea
+                  name="descripcion"
+                  rows="2"
+                  placeholder="Breve descripción del reporte"
+                ></textarea>
+              </div>
+
+              <div class="form-group">
+                <label>Contexto (para IA) *</label>
+                <textarea
+                  name="contexto"
+                  rows="4"
+                  required
+                  placeholder="Describe el propósito del reporte, qué información contiene, cómo se relaciona con otros datos, y cualquier consideración importante para análisis automático."
+                ></textarea>
+                <small
+                  >Este contexto será usado por agentes de IA para entender y
+                  analizar los datos correctamente.</small
+                >
+              </div>
+            </div>
+
+            <!-- Campos -->
+            <div class="form-section">
+              <h3>📋 Campos del Reporte</h3>
+              <p>Define las columnas que tendrá el archivo Excel</p>
+
+              <!-- NUEVO: Opción de subir Excel -->
+              <div class="excel-upload-section">
+                <div class="upload-option">
+                  <h4>⚡ Opción Rápida: Subir Excel de Ejemplo</h4>
+                  <p>
+                    Sube un archivo Excel con los encabezados y una fila de
+                    ejemplo para detectar automáticamente los campos
+                  </p>
+
+                  <div class="excel-dropzone" id="excel-dropzone">
+                    <span class="upload-icon">📁</span>
+                    <p>Arrastra tu Excel aquí o haz clic para seleccionar</p>
+                    <small
+                      >El archivo debe tener los encabezados y al menos una fila
+                      con datos de ejemplo</small
+                    >
+                  </div>
+                  <input
+                    type="file"
+                    id="excel-input"
+                    accept=".xlsx"
+                    style="display: none"
+                  />
+
+                  <div
+                    id="excel-result"
+                    class="excel-result"
+                    style="display: none"
+                  >
+                    <p class="success-msg">✅ <span id="excel-msg"></span></p>
+                    <button
+                      type="button"
+                      class="btn btn-secondary btn-sm"
+                      onclick="limpiarExcel()"
+                    >
+                      Limpiar y agregar manualmente
+                    </button>
+                  </div>
+                </div>
+
+                <div class="divider">
+                  <span>O</span>
+                </div>
+
+                <div class="manual-option">
+                  <h4>✍️ Agregar Campos Manualmente</h4>
+                </div>
+              </div>
+
+              <div id="campos-container">
+                <!-- Los campos se agregan dinámicamente -->
+              </div>
+
+              <button
+                type="button"
+                class="btn btn-secondary"
+                onclick="agregarCampo()"
+              >
+                + Agregar Campo
+              </button>
+            </div>
+
+            <!-- Relaciones -->
+            <div class="form-section">
+              <h3>🔗 Relaciones (opcional)</h3>
+              <p>Define cómo este reporte se relaciona con otros</p>
+
+              <div id="relaciones-container">
+                <!-- Las relaciones se agregan dinámicamente -->
+              </div>
+
+              <button
+                type="button"
+                class="btn btn-secondary"
+                onclick="agregarRelacion()"
+              >
+                + Agregar Relación
+              </button>
+            </div>
+
+            <div class="form-actions">
+              <button
+                type="button"
+                class="btn btn-secondary"
+                onclick="cerrarModal()"
+              >
+                Cancelar
+              </button>
+              <button type="submit" class="btn btn-success">
+                💾 Guardar Reporte
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Editar Reporte -->
+    <div id="modal-editar-reporte" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Editar Reporte</h2>
+          <button class="close-btn" onclick="cerrarModalEditar()">
+            &times;
+          </button>
+        </div>
+        <div class="modal-body">
+          <form id="form-editar-reporte">
+            <!-- Similar al formulario de crear -->
+            <div id="editar-content"></div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/admin.js"></script>
+  </body>
+</html>

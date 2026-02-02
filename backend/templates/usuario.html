@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Portal de Carga de Reportes</title>
+    <link rel="stylesheet" href="/static/usuario.css" />
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>📊 Portal de Reportes</h1>
+        <p class="subtitle">Descargue plantillas y cargue sus datos</p>
+        <a href="/admin" class="admin-link">🔧 Panel Admin</a>
+      </header>
+
+      <div class="main-content">
+        <!-- Paso 1: Seleccionar Reporte -->
+        <section class="card">
+          <h2>1️⃣ Seleccione el Reporte</h2>
+
+          <div id="reportes-disponibles" class="reportes-grid">
+            <p class="loading">Cargando reportes disponibles...</p>
+          </div>
+        </section>
+
+        <!-- Paso 2: Descargar Plantilla -->
+        <section class="card" id="paso2" style="display: none">
+          <h2>2️⃣ Descargar Plantilla</h2>
+
+          <div class="reporte-seleccionado">
+            <div class="reporte-info">
+              <span id="reporte-icono" class="icono-grande">📊</span>
+              <div>
+                <h3 id="reporte-nombre">Nombre del Reporte</h3>
+                <p id="reporte-descripcion">Descripción</p>
+              </div>
+            </div>
+
+            <div class="contexto-box">
+              <strong>📖 Para qué sirve este reporte:</strong>
+              <p id="reporte-contexto"></p>
+            </div>
+
+            <button
+              class="btn btn-primary btn-large"
+              onclick="descargarPlantilla()"
+            >
+              ⬇️ Descargar Plantilla Excel
+            </button>
+          </div>
+        </section>
+
+        <!-- Paso 3: Subir Archivo -->
+        <section class="card" id="paso3" style="display: none">
+          <h2>3️⃣ Subir Archivo Completado</h2>
+
+          <div class="upload-area">
+            <div class="dropzone" id="dropzone">
+              <span class="upload-icon">📁</span>
+              <p>Arrastre el archivo aquí o haga clic para seleccionar</p>
+              <p class="hint">Solo archivos .xlsx</p>
+            </div>
+            <input
+              type="file"
+              id="fileInput"
+              accept=".xlsx"
+              style="display: none"
+            />
+
+            <div id="file-selected" class="file-selected" style="display: none">
+              <p><strong>Archivo:</strong> <span id="filename"></span></p>
+              <button class="btn btn-success" onclick="subirArchivo()">
+                📤 Subir Datos
+              </button>
+              <button class="btn btn-secondary" onclick="cancelarArchivo()">
+                Cancelar
+              </button>
+            </div>
+
+            <div id="upload-result" class="alert" style="display: none"></div>
+          </div>
+        </section>
+
+        <!-- Estadísticas -->
+        <section class="card" id="estadisticas" style="display: none">
+          <h2>📈 Estadísticas</h2>
+          <div id="stats-content"></div>
+        </section>
+      </div>
+
+      <footer>
+        <p>Sistema Dinámico de Reportes | 2026</p>
+      </footer>
+    </div>
+
+    <script src="/static/usuario.js"></script>
+  </body>
+</html>
