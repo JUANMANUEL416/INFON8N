@@ -3,15 +3,39 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Portal de Carga de Reportes</title>
-    <link rel="stylesheet" href="/static/usuario.css" />
+    <title>Portal de Reportes</title>
+    <link rel="stylesheet" href="/static/style.css?v=2" />
   </head>
   <body>
     <div class="container">
       <header>
-        <h1>📊 Portal de Reportes</h1>
-        <p class="subtitle">Descargue plantillas y cargue sus datos</p>
-        <a href="/admin" class="admin-link">🔧 Panel Admin</a>
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          "
+        >
+          <div>
+            <h1>📊 Portal de Reportes</h1>
+            <p class="subtitle">Descargue plantillas y cargue sus datos</p>
+          </div>
+          <div class="user-info-header">
+            <div style="text-align: right; margin-bottom: 10px">
+              <strong id="user-name">👤 Usuario</strong>
+              <p style="margin: 5px 0; color: #666; font-size: 14px">
+                <span id="user-group">📋 Grupo</span>
+              </p>
+            </div>
+            <button
+              onclick="cerrarSesion()"
+              class="btn btn-secondary"
+              style="font-size: 14px"
+            >
+              🚪 Cerrar Sesión
+            </button>
+          </div>
+        </div>
       </header>
 
       <div class="main-content">
@@ -94,6 +118,6 @@
       </footer>
     </div>
 
-    <script src="/static/usuario.js"></script>
+    <script src="/static/app.js?v=2"></script>
   </body>
 </html>

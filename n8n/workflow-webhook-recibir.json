@@ -1,0 +1,99 @@
+{
+  "name": "Webhook - Recibir y Cargar Datos",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "recibir-datos",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger-001",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300],
+      "webhookId": "webhook-recibir-datos"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Transformar datos recibidos al formato esperado\nconst datosRecibidos = $input.all();\n\n// Ejemplo: si recibes datos de otra API, transfórmalos aquí\nconst datosTransformados = datosRecibidos.map(item => ({\n  // Mapea los campos según tu reporte\n  fecha: item.json.fecha || new Date().toISOString().split('T')[0],\n  monto: item.json.monto || 0,\n  cliente: item.json.cliente || 'Sin nombre',\n  // Agrega más campos según necesites\n  ...item.json\n}));\n\nreturn { json: { datos: datosTransformados } };"
+      },
+      "id": "code-transform-001",
+      "name": "Transformar Datos",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "url": "http://backend:5000/webhook/upload/facturacion emitida de manera unitaria",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "http-send-001",
+      "name": "Enviar al Sistema",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {}
+      },
+      "id": "webhook-response-001",
+      "name": "Responder",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [850, 300]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Transformar Datos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Transformar Datos": {
+      "main": [
+        [
+          {
+            "node": "Enviar al Sistema",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar al Sistema": {
+      "main": [
+        [
+          {
+            "node": "Responder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "tags": [],
+  "triggerCount": 0,
+  "updatedAt": "2026-02-08T09:00:00.000Z",
+  "versionId": "1"
+}

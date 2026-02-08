@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Panel de Administración - Reportes</title>
     <link rel="stylesheet" href="/static/admin.css?v=2" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   </head>
   <body>
     <div class="admin-container">
@@ -17,11 +18,27 @@
             <span>📊</span> Gestión de Reportes
           </li>
           <li data-section="datos"><span>💾</span> Ver Datos</li>
+          <li data-section="analisis"><span>🤖</span> Análisis IA</li>
           <li data-section="usuarios"><span>👥</span> Usuarios</li>
         </ul>
         <div class="user-info">
           <p>👤 Administrador</p>
           <a href="/">← Portal Usuario</a>
+          <button
+            onclick="cerrarSesion()"
+            style="
+              margin-top: 10px;
+              width: 100%;
+              padding: 8px;
+              background: #dc3545;
+              color: white;
+              border: none;
+              border-radius: 4px;
+              cursor: pointer;
+            "
+          >
+            🚪 Cerrar Sesión
+          </button>
         </div>
       </nav>
 
@@ -43,19 +60,424 @@
         <!-- Sección: Ver Datos -->
         <section id="datos-section" class="section">
           <header class="section-header">
-            <h1>💾 Datos Cargados</h1>
+            <h1>💾 Consultar Datos</h1>
           </header>
+
+          <div class="card" style="margin-bottom: 20px">
+            <h3>Seleccionar Reporte</h3>
+            <select
+              id="select-reporte-datos"
+              class="form-control"
+              onchange="cargarDatosReporte()"
+            >
+              <option value="">-- Seleccione un reporte --</option>
+            </select>
+
+            <div id="filtros-consulta" style="display: none; margin-top: 20px">
+              <h3>Filtros</h3>
+              <div
+                style="
+                  display: grid;
+                  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                  gap: 15px;
+                "
+              >
+                <div>
+                  <label>Límite de registros:</label>
+                  <select id="limite-registros" class="form-control">
+                    <option value="50">50 registros</option>
+                    <option value="100" selected>100 registros</option>
+                    <option value="500">500 registros</option>
+                    <option value="1000">1000 registros</option>
+                  </select>
+                </div>
+                <div>
+                  <label>Fecha desde:</label>
+                  <input type="date" id="fecha-desde" class="form-control" />
+                </div>
+                <div>
+                  <label>Fecha hasta:</label>
+                  <input type="date" id="fecha-hasta" class="form-control" />
+                </div>
+              </div>
+              <div style="margin-top: 15px">
+                <button class="btn btn-primary" onclick="buscarDatos()">
+                  🔍 Buscar
+                </button>
+                <button class="btn btn-success" onclick="exportarDatos()">
+                  📥 Exportar a Excel
+                </button>
+                <button class="btn btn-info" onclick="mostrarWebhookInfo()">
+                  🔗 Webhook n8n
+                </button>
+              </div>
+            </div>
+          </div>
+
           <div id="datos-content">
-            <p>Selecciona un reporte en la sección anterior</p>
+            <div
+              id="datos-estadisticas"
+              style="display: none; margin-bottom: 20px"
+            >
+              <div
+                style="
+                  display: grid;
+                  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+                  gap: 15px;
+                "
+              >
+                <div class="stat-card">
+                  <h4>Total Registros</h4>
+                  <p
+                    id="stat-total"
+                    style="font-size: 2rem; font-weight: bold; color: #667eea"
+                  >
+                    0
+                  </p>
+                </div>
+                <div class="stat-card">
+                  <h4>Última Actualización</h4>
+                  <p id="stat-fecha" style="font-size: 1rem; color: #666">-</p>
+                </div>
+              </div>
+            </div>
+
+            <div id="datos-tabla-container" style="overflow-x: auto">
+              <p style="color: #999; text-align: center; padding: 40px">
+                Seleccione un reporte para ver los datos
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <!-- Sección: Análisis IA -->
+        <section id="analisis-section" class="section">
+          <header class="section-header">
+            <h1>🤖 Análisis con IA y Chat</h1>
+          </header>
+
+          <div class="card" style="margin-bottom: 20px">
+            <h3>Seleccionar Reporte</h3>
+            <select
+              id="select-reporte-analisis"
+              class="form-control"
+              onchange="cargarReporteAnalisis()"
+            >
+              <option value="">-- Seleccione un reporte --</option>
+            </select>
+          </div>
+
+          <div id="analisis-container" style="display: none">
+            <!-- Tabs de Análisis -->
+            <div class="tabs">
+              <button
+                class="tab-btn active"
+                onclick="cambiarTabAnalisis('chat')"
+              >
+                💬 Chat con IA
+              </button>
+              <button class="tab-btn" onclick="cambiarTabAnalisis('informes')">
+                📑 Generar Informes
+              </button>
+              <button class="tab-btn" onclick="cambiarTabAnalisis('busqueda')">
+                🔍 Búsqueda Semántica
+              </button>
+            </div>
+
+            <!-- Tab: Chat -->
+            <div
+              id="tab-chat-ia"
+              class="tab-content active"
+              style="margin-top: 20px"
+            >
+              <div
+                class="chat-container"
+                style="background: #f9f9f9; border-radius: 10px; padding: 20px"
+              >
+                <div
+                  id="chat-messages"
+                  style="
+                    height: 400px;
+                    overflow-y: auto;
+                    margin-bottom: 15px;
+                    background: white;
+                    padding: 15px;
+                    border-radius: 8px;
+                  "
+                >
+                  <div class="chat-message system">
+                    <strong>🤖 Asistente IA:</strong>
+                    <p>
+                      Hola! Estoy listo para ayudarte a analizar tus datos.
+                      Puedes hacerme preguntas como:
+                    </p>
+                    <ul>
+                      <li>"¿Cuál es el total facturado?"</li>
+                      <li>"¿Qué clientes tienen mayor facturación?"</li>
+                      <li>"¿Cuáles son las tendencias del mes?"</li>
+                      <li>"Muéstrame anomalías en los datos"</li>
+                    </ul>
+                  </div>
+                </div>
+
+                <div style="display: flex; gap: 10px">
+                  <input
+                    type="text"
+                    id="chat-input"
+                    class="form-control"
+                    placeholder="Escribe tu pregunta aquí..."
+                    onkeypress="if (event.key === 'Enter') enviarPregunta();"
+                    style="flex: 1"
+                  />
+                  <button class="btn btn-primary" onclick="enviarPregunta()">
+                    Enviar
+                  </button>
+                </div>
+
+                <div style="margin-top: 10px; font-size: 0.9em; color: #666">
+                  💡 Tip: Primero indexa los datos para respuestas más precisas
+                  <button
+                    class="btn btn-sm btn-info"
+                    onclick="indexarDatos()"
+                    style="margin-left: 10px"
+                  >
+                    🔄 Indexar Datos
+                  </button>
+                  <span id="indexar-status" style="margin-left: 10px"></span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab: Informes -->
+            <div
+              id="tab-informes-ia"
+              class="tab-content"
+              style="margin-top: 20px"
+            >
+              <div class="card">
+                <h3>Generar Informes con IA</h3>
+                <p>Selecciona el tipo de informe que deseas generar:</p>
+
+                <div
+                  style="
+                    display: grid;
+                    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+                    gap: 15px;
+                    margin-top: 20px;
+                  "
+                >
+                  <button
+                    class="btn btn-primary"
+                    onclick="generarAnalisis('general')"
+                  >
+                    📊 Análisis General
+                  </button>
+                  <button
+                    class="btn btn-info"
+                    onclick="generarAnalisis('tendencias')"
+                  >
+                    📈 Análisis de Tendencias
+                  </button>
+                  <button
+                    class="btn btn-warning"
+                    onclick="generarAnalisis('anomalias')"
+                  >
+                    ⚠️ Detectar Anomalías
+                  </button>
+                  <button
+                    class="btn btn-success"
+                    onclick="generarInformeCompleto()"
+                  >
+                    📑 Informe Completo
+                  </button>
+                </div>
+
+                <div
+                  id="informe-resultado"
+                  style="margin-top: 30px; display: none"
+                >
+                  <h3 id="informe-titulo">Resultado</h3>
+
+                  <!-- Contenedor de gráficos -->
+                  <div
+                    id="graficos-container"
+                    style="
+                      display: grid;
+                      grid-template-columns: repeat(
+                        auto-fit,
+                        minmax(400px, 1fr)
+                      );
+                      gap: 20px;
+                      margin-bottom: 30px;
+                    "
+                  ></div>
+
+                  <!-- Contenido del análisis de texto -->
+                  <div
+                    id="informe-contenido"
+                    style="
+                      background: #f9f9f9;
+                      padding: 20px;
+                      border-radius: 8px;
+                      white-space: pre-wrap;
+                      line-height: 1.6;
+                    "
+                  ></div>
+
+                  <button
+                    class="btn btn-secondary"
+                    onclick="copiarInforme()"
+                    style="margin-top: 15px"
+                  >
+                    📋 Copiar Informe
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Tab: Búsqueda Semántica -->
+            <div
+              id="tab-busqueda-ia"
+              class="tab-content"
+              style="margin-top: 20px"
+            >
+              <div class="card">
+                <h3>Búsqueda Semántica en los Datos</h3>
+                <p>
+                  Busca información usando lenguaje natural. El sistema
+                  encuentra los registros más relevantes.
+                </p>
+
+                <div style="margin-top: 20px">
+                  <label>¿Qué estás buscando?</label>
+                  <textarea
+                    id="busqueda-input"
+                    class="form-control"
+                    rows="3"
+                    placeholder="Ejemplo: Busca facturas de más de 1 millón de pesos del cliente Universidad"
+                  ></textarea>
+
+                  <div style="margin-top: 15px">
+                    <label>Número de resultados:</label>
+                    <select
+                      id="busqueda-limite"
+                      class="form-control"
+                      style="width: 200px"
+                    >
+                      <option value="3">3 resultados</option>
+                      <option value="5" selected>5 resultados</option>
+                      <option value="10">10 resultados</option>
+                      <option value="20">20 resultados</option>
+                    </select>
+                  </div>
+
+                  <button
+                    class="btn btn-primary"
+                    onclick="buscarSemantico()"
+                    style="margin-top: 15px"
+                  >
+                    🔍 Buscar
+                  </button>
+                </div>
+
+                <div
+                  id="busqueda-resultados"
+                  style="margin-top: 30px; display: none"
+                >
+                  <h3>Resultados Encontrados</h3>
+                  <div id="busqueda-contenido"></div>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
 
         <!-- Sección: Usuarios -->
         <section id="usuarios-section" class="section">
           <header class="section-header">
-            <h1>👥 Gestión de Usuarios</h1>
+            <h1>👥 Gestión de Usuarios y Grupos</h1>
+            <div>
+              <button
+                class="btn btn-primary"
+                onclick="abrirModalNuevoUsuario()"
+              >
+                + Nuevo Usuario
+              </button>
+              <button
+                class="btn btn-secondary"
+                onclick="abrirModalNuevoGrupo()"
+              >
+                + Nuevo Grupo
+              </button>
+            </div>
           </header>
-          <p>En desarrollo...</p>
+
+          <div class="tabs">
+            <button class="tab-btn active" onclick="cambiarTab('usuarios')">
+              Usuarios
+            </button>
+            <button class="tab-btn" onclick="cambiarTab('grupos')">
+              Grupos
+            </button>
+            <button class="tab-btn" onclick="cambiarTab('permisos')">
+              Permisos
+            </button>
+          </div>
+
+          <div id="tab-usuarios" class="tab-content active">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Usuario</th>
+                  <th>Nombre</th>
+                  <th>Grupo</th>
+                  <th>Estado</th>
+                  <th>Fecha Creación</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="usuarios-list">
+                <tr>
+                  <td colspan="6">Cargando...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div id="tab-grupos" class="tab-content">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Código</th>
+                  <th>Nombre</th>
+                  <th>Descripción</th>
+                  <th>Usuarios</th>
+                  <th>Estado</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody id="grupos-list">
+                <tr>
+                  <td colspan="6">Cargando...</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div id="tab-permisos" class="tab-content">
+            <div class="permisos-container">
+              <div class="form-group">
+                <label>Seleccionar Grupo:</label>
+                <select
+                  id="grupo-permisos-select"
+                  onchange="cargarPermisosGrupo()"
+                >
+                  <option value="">Seleccione un grupo...</option>
+                </select>
+              </div>
+              <div id="permisos-grid"></div>
+            </div>
+          </div>
         </section>
       </main>
     </div>
@@ -136,6 +558,44 @@
                 <small
                   >Este contexto será usado por agentes de IA para entender y
                   analizar los datos correctamente.</small
+                >
+              </div>
+            </div>
+
+            <!-- API y Consultas -->
+            <div class="form-section">
+              <h3>🔌 API y Consultas</h3>
+              <p>Configuración para acceder a los datos mediante API</p>
+
+              <div class="form-group">
+                <label>Endpoint de API</label>
+                <input
+                  type="text"
+                  name="api_endpoint"
+                  placeholder="/api/query/facturacion_diaria"
+                />
+                <small
+                  >Ruta personalizada para consultar este reporte. Si se deja
+                  vacío, se usará: /api/query/{codigo}</small
+                >
+              </div>
+
+              <div class="form-group">
+                <label>Plantilla de Consulta SQL (opcional)</label>
+                <textarea
+                  name="query_template"
+                  rows="6"
+                  placeholder="SELECT * FROM datos_reportes 
+WHERE reporte_codigo = '{codigo}'
+  AND datos->>'fecha' >= '{fecha_inicio}'
+  AND datos->>'fecha' <= '{fecha_fin}'
+ORDER BY created_at DESC
+LIMIT {limite}"
+                ></textarea>
+                <small
+                  >Puedes usar placeholders: {codigo}, {fecha_inicio},
+                  {fecha_fin}, {limite}, {campo_*}. Si se deja vacío, se usará
+                  una consulta estándar.</small
                 >
               </div>
             </div>
@@ -260,6 +720,135 @@
       </div>
     </div>
 
-    <script src="/static/admin.js"></script>
+    <!-- Modal: Nuevo Usuario -->
+    <div id="modal-nuevo-usuario" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Crear Nuevo Usuario</h2>
+          <button class="close-btn" onclick="cerrarModalUsuario()">
+            &times;
+          </button>
+        </div>
+        <div class="modal-body">
+          <form id="form-nuevo-usuario" onsubmit="guardarUsuario(event)">
+            <div class="form-group">
+              <label>Username *</label>
+              <input
+                type="text"
+                name="username"
+                required
+                placeholder="Nombre de usuario único"
+              />
+            </div>
+            <div class="form-group">
+              <label>Contraseña *</label>
+              <input
+                type="password"
+                name="password"
+                required
+                placeholder="Contraseña"
+              />
+            </div>
+            <div class="form-group">
+              <label>Nombre Completo *</label>
+              <input
+                type="text"
+                name="nombre"
+                required
+                placeholder="Nombre completo del usuario"
+              />
+            </div>
+            <div class="form-group">
+              <label>Grupo *</label>
+              <select name="grupo_id" id="usuario-grupo-select" required>
+                <option value="">Seleccione un grupo...</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Estado</label>
+              <select name="estado">
+                <option value="activo">Activo</option>
+                <option value="inactivo">Inactivo</option>
+              </select>
+            </div>
+            <div class="modal-footer">
+              <button
+                type="button"
+                class="btn btn-secondary"
+                onclick="cerrarModalUsuario()"
+              >
+                Cancelar
+              </button>
+              <button type="submit" class="btn btn-primary">
+                Guardar Usuario
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Nuevo Grupo -->
+    <div id="modal-nuevo-grupo" class="modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2>Crear Nuevo Grupo</h2>
+          <button class="close-btn" onclick="cerrarModalGrupo()">
+            &times;
+          </button>
+        </div>
+        <div class="modal-body">
+          <form id="form-nuevo-grupo" onsubmit="guardarGrupo(event)">
+            <div class="form-group">
+              <label>Código *</label>
+              <input
+                type="text"
+                name="codigo"
+                required
+                placeholder="codigo_unico (sin espacios)"
+              />
+            </div>
+            <div class="form-group">
+              <label>Nombre *</label>
+              <input
+                type="text"
+                name="nombre"
+                required
+                placeholder="Nombre del grupo"
+              />
+            </div>
+            <div class="form-group">
+              <label>Descripción</label>
+              <textarea
+                name="descripcion"
+                rows="3"
+                placeholder="Descripción del grupo"
+              ></textarea>
+            </div>
+            <div class="form-group">
+              <label>Estado</label>
+              <select name="estado">
+                <option value="activo">Activo</option>
+                <option value="inactivo">Inactivo</option>
+              </select>
+            </div>
+            <div class="modal-footer">
+              <button
+                type="button"
+                class="btn btn-secondary"
+                onclick="cerrarModalGrupo()"
+              >
+                Cancelar
+              </button>
+              <button type="submit" class="btn btn-primary">
+                Guardar Grupo
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <script src="/static/admin.js?v=3"></script>
   </body>
 </html>

@@ -5,6 +5,11 @@ pandas==2.1.4
 openpyxl==3.1.2
 python-dotenv==1.0.1
 chromadb==0.4.22
-openai==1.10.0
+openai==1.54.5
 SQLAlchemy==2.0.25
 requests==2.31.0
+xlsxwriter==3.1.9
+flask-mail==0.9.1
+pillow==10.2.0
+matplotlib==3.8.2
+seaborn==0.13.0

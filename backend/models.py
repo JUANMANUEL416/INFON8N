@@ -19,6 +19,8 @@ class ReporteConfig:
         self.activo = data.get('activo', True)
         self.campos = data.get('campos', [])  # Lista de campos/columnas
         self.relaciones = data.get('relaciones', [])  # Relaciones con otros reportes
+        self.api_endpoint = data.get('api_endpoint')  # Endpoint personalizado de API
+        self.query_template = data.get('query_template')  # Template de consulta SQL
         self.created_at = data.get('created_at')
         self.updated_at = data.get('updated_at')
     
@@ -34,6 +36,8 @@ class ReporteConfig:
             'activo': self.activo,
             'campos': self.campos,
             'relaciones': self.relaciones,
+            'api_endpoint': self.api_endpoint,
+            'query_template': self.query_template,
             'created_at': self.created_at,
             'updated_at': self.updated_at
         }
@@ -99,4 +103,79 @@ class RelacionConfig:
             'campo_destino': self.campo_destino,
             'tipo': self.tipo,
             'descripcion': self.descripcion
+        }
+
+class Usuario:
+    """Modelo de usuario"""
+    
+    def __init__(self, data: dict):
+        self.id = data.get('id')
+        self.username = data.get('username')
+        self.password = data.get('password')  # Será hasheado
+        self.nombre = data.get('nombre')
+        self.estado = data.get('estado', 'activo')  # activo, inactivo
+        self.grupo_id = data.get('grupo_id')  # Grupo principal del usuario
+        self.created_at = data.get('created_at')
+        self.updated_at = data.get('updated_at')
+    
+    def to_dict(self, include_password=False):
+        data = {
+            'id': self.id,
+            'username': self.username,
+            'nombre': self.nombre,
+            'estado': self.estado,
+            'grupo_id': self.grupo_id,
+            'created_at': self.created_at,
+            'updated_at': self.updated_at
+        }
+        if include_password:
+            data['password'] = self.password
+        return data
+
+class Grupo:
+    """Modelo de grupo"""
+    
+    def __init__(self, data: dict):
+        self.id = data.get('id')
+        self.codigo = data.get('codigo')  # Código único del grupo
+        self.nombre = data.get('nombre')
+        self.descripcion = data.get('descripcion')
+        self.estado = data.get('estado', 'activo')  # activo, inactivo
+        self.created_at = data.get('created_at')
+        self.updated_at = data.get('updated_at')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'codigo': self.codigo,
+            'nombre': self.nombre,
+            'descripcion': self.descripcion,
+            'estado': self.estado,
+            'created_at': self.created_at,
+            'updated_at': self.updated_at
+        }
+
+class GrupoReporte:
+    """Modelo de relación entre grupos y reportes (permisos)"""
+    
+    def __init__(self, data: dict):
+        self.id = data.get('id')
+        self.grupo_id = data.get('grupo_id')
+        self.reporte_codigo = data.get('reporte_codigo')
+        self.puede_ver = data.get('puede_ver', True)
+        self.puede_crear = data.get('puede_crear', False)
+        self.puede_editar = data.get('puede_editar', False)
+        self.puede_eliminar = data.get('puede_eliminar', False)
+        self.created_at = data.get('created_at')
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'grupo_id': self.grupo_id,
+            'reporte_codigo': self.reporte_codigo,
+            'puede_ver': self.puede_ver,
+            'puede_crear': self.puede_crear,
+            'puede_editar': self.puede_editar,
+            'puede_eliminar': self.puede_eliminar,
+            'created_at': self.created_at
         }
