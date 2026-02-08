@@ -53,3 +53,10 @@ logs/
 
 # ChromaDB
 chroma_data/
+
+# Archivos Excel generados
+*.xlsx
+Informe_*.xlsx
+
+# Archivos temporales de pruebas
+informe_*.xlsx

@@ -713,32 +713,33 @@ def consultar_datos_reporte(codigo):
         fecha_fin = request.args.get('fecha_fin')
         limite = request.args.get('limite', 100, type=int)
         
-        # Construir filtros personalizados
-        filtros_custom = {}
-        for key, value in request.args.items():
-            if key.startswith('campo_'):
-                campo_nombre = key.replace('campo_', '')
-                filtros_custom[campo_nombre] = value
+        # Usar consulta básica por ahora
+        datos = db_manager.consultar_datos(codigo, limite=limite)
         
-        # Si hay query_template personalizado, usarlo
-        if reporte.get('query_template'):
-            datos = db_manager.consultar_datos_custom(
-                codigo, 
-                reporte['query_template'],
-                fecha_inicio=fecha_inicio,
-                fecha_fin=fecha_fin,
-                limite=limite,
-                **filtros_custom
-            )
-        else:
-            # Usar consulta estándar
-            datos = db_manager.consultar_datos_filtrado(
-                codigo,
-                fecha_inicio=fecha_inicio,
-                fecha_fin=fecha_fin,
-                limite=limite,
-                filtros=filtros_custom
-            )
+        # Aplicar filtros manualmente si se proporcionan
+        if fecha_inicio or fecha_fin:
+            datos_filtrados = []
+            for dato in datos:
+                datos_dict = dato.get('datos', {})
+                # Intentar filtrar por fecha si existe un campo de fecha
+                fecha_campo = None
+                for campo_key in datos_dict.keys():
+                    if 'fecha' in campo_key.lower():
+                        fecha_campo = datos_dict.get(campo_key)
+                        break
+                
+                if fecha_campo:
+                    incluir = True
+                    if fecha_inicio and str(fecha_campo) < fecha_inicio:
+                        incluir = False
+                    if fecha_fin and str(fecha_campo) > fecha_fin:
+                        incluir = False
+                    if incluir:
+                        datos_filtrados.append(dato)
+                else:
+                    datos_filtrados.append(dato)
+            
+            datos = datos_filtrados
         
         return jsonify({
             'success': True,
@@ -1292,6 +1293,326 @@ def enviar_analisis_correo(codigo):
     except Exception as e:
         logger.error(f"Error enviando correo: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/api/analysis/<codigo>/informe-personalizado', methods=['POST'])
+def generar_informe_personalizado(codigo):
+    """
+    Generar informe personalizado basado en solicitud en lenguaje natural
+    
+    Body:
+    {
+        "solicitud": "facturación semanal agrupada por tercero",
+        "exportar_excel": true,
+        "enviar_correo": false,
+        "destinatarios": ["email@ejemplo.com"]
+    }
+    """
+    try:
+        data = request.get_json()
+        solicitud = data.get('solicitud', '')
+        exportar_excel = data.get('exportar_excel', False)
+        enviar_correo = data.get('enviar_correo', False)
+        destinatarios = data.get('destinatarios', [])
+        
+        if not solicitud:
+            return jsonify({'error': 'Se requiere una solicitud'}), 400
+        
+        # Generar informe personalizado
+        logger.info(f"Generando informe personalizado: {solicitud}")
+        informe = analysis_agent.generar_informe_personalizado(codigo, solicitud)
+        
+        resultado = {
+            'success': True,
+            'informe': informe,
+            'mensaje': 'Informe generado exitosamente'
+        }
+        
+        # Si se solicita exportar a Excel
+        if exportar_excel:
+            try:
+                excel_buffer = _generar_excel_con_graficos_incrustados(informe)
+                
+                if enviar_correo and destinatarios:
+                    # Enviar por correo con Excel adjunto
+                    _enviar_informe_por_correo(informe, excel_buffer, destinatarios)
+                    resultado['correo_enviado'] = True
+                    resultado['destinatarios'] = destinatarios
+                else:
+                    # Retornar Excel para descarga
+                    excel_buffer.seek(0)
+                    return send_file(
+                        excel_buffer,
+                        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        as_attachment=True,
+                        download_name=f'Informe_{codigo}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
+                    )
+                    
+            except Exception as e:
+                logger.error(f"Error generando Excel: {e}")
+                resultado['error_excel'] = str(e)
+        
+        return jsonify(resultado), 200
+        
+    except Exception as e:
+        logger.error(f"Error generando informe personalizado: {e}")
+        return jsonify({'error': str(e)}), 500
+
+def _generar_excel_con_graficos_incrustados(informe: dict) -> BytesIO:
+    """Generar Excel con gráficos incrustados de Excel (nativos)"""
+    output = BytesIO()
+    
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        workbook = writer.book
+        
+        # Formatos
+        title_format = workbook.add_format({
+            'bold': True,
+            'font_size': 14,
+            'bg_color': '#4285F4',
+            'font_color': 'white',
+            'align': 'center',
+            'valign': 'vcenter'
+        })
+        header_format = workbook.add_format({
+            'bold': True,
+            'bg_color': '#E8F0FE',
+            'border': 1
+        })
+        data_format = workbook.add_format({'border': 1})
+        number_format = workbook.add_format({'border': 1, 'num_format': '#,##0.00'})
+        
+        # Hoja 1: Resumen Ejecutivo
+        worksheet_resumen = workbook.add_worksheet('📊 Resumen Ejecutivo')
+        worksheet_resumen.set_column('A:A', 20)
+        worksheet_resumen.set_column('B:B', 80)
+        
+        row = 0
+        worksheet_resumen.write(row, 0, 'Reporte:', header_format)
+        worksheet_resumen.write(row, 1, informe['reporte'], data_format)
+        row += 1
+        
+        worksheet_resumen.write(row, 0, 'Solicitud:', header_format)
+        worksheet_resumen.write(row, 1, informe['solicitud'], data_format)
+        row += 1
+        
+        worksheet_resumen.write(row, 0, 'Fecha:', header_format)
+        worksheet_resumen.write(row, 1, informe['fecha_generacion'], data_format)
+        row += 2
+        
+        worksheet_resumen.write(row, 0, 'Registros Totales:', header_format)
+        worksheet_resumen.write(row, 1, informe['total_registros'], data_format)
+        row += 1
+        
+        worksheet_resumen.write(row, 0, 'Registros Procesados:', header_format)
+        worksheet_resumen.write(row, 1, informe['registros_procesados'], data_format)
+        row += 3
+        
+        # Resumen ejecutivo
+        if informe.get('resumen_ejecutivo'):
+            worksheet_resumen.write(row, 0, 'RESUMEN EJECUTIVO', title_format)
+            row += 1
+            worksheet_resumen.merge_range(row, 0, row + 15, 1, 
+                informe['resumen_ejecutivo'],
+                workbook.add_format({'text_wrap': True, 'valign': 'top', 'border': 1})
+            )
+        
+        # Hoja 2: Datos Procesados
+        if informe.get('datos_procesados'):
+            df_procesado = pd.DataFrame(informe['datos_procesados'])
+            df_procesado.to_excel(writer, sheet_name='📋 Datos Agrupados', index=False)
+            
+            worksheet_datos = writer.sheets['📋 Datos Agrupados']
+            for col_num, value in enumerate(df_procesado.columns.values):
+                worksheet_datos.write(0, col_num, value, header_format)
+                # Ajustar ancho de columna
+                max_len = max(
+                    df_procesado[value].astype(str).apply(len).max(),
+                    len(str(value))
+                )
+                worksheet_datos.set_column(col_num, col_num, min(max_len + 2, 50))
+        
+        # Hoja 3: Gráficos (con gráficos nativos de Excel)
+        if informe.get('graficos'):
+            worksheet_graficos = workbook.add_worksheet('📈 Gráficos')
+            worksheet_graficos.write(0, 0, 'VISUALIZACIONES', title_format)
+            
+            row_grafico = 2
+            
+            for idx, grafico_data in enumerate(informe['graficos']):
+                tipo = grafico_data.get('tipo', 'bar')
+                titulo = grafico_data.get('titulo', f'Gráfico {idx+1}')
+                labels = grafico_data.get('labels', [])
+                datos = grafico_data.get('datos', [])
+                
+                if not labels or not datos:
+                    continue
+                
+                # Escribir datos del gráfico en columnas
+                col_inicio = 0
+                worksheet_graficos.write(row_grafico, col_inicio, 'Categoría', header_format)
+                worksheet_graficos.write(row_grafico, col_inicio + 1, 'Valor', header_format)
+                
+                for i, (label, valor) in enumerate(zip(labels, datos)):
+                    worksheet_graficos.write(row_grafico + 1 + i, col_inicio, str(label))
+                    worksheet_graficos.write(row_grafico + 1 + i, col_inicio + 1, valor, number_format)
+                
+                # Crear gráfico nativo de Excel
+                if tipo == 'bar':
+                    chart = workbook.add_chart({'type': 'column'})
+                elif tipo == 'pie':
+                    chart = workbook.add_chart({'type': 'pie'})
+                elif tipo == 'line':
+                    chart = workbook.add_chart({'type': 'line'})
+                else:
+                    chart = workbook.add_chart({'type': 'column'})
+                
+                # Configurar serie de datos
+                chart.add_series({
+                    'name': titulo,
+                    'categories': ['📈 Gráficos', row_grafico + 1, col_inicio, 
+                                  row_grafico + len(labels), col_inicio],
+                    'values': ['📈 Gráficos', row_grafico + 1, col_inicio + 1,
+                              row_grafico + len(labels), col_inicio + 1],
+                    'data_labels': {'value': True, 'num_format': '#,##0'},
+                })
+                
+                # Configurar título y estilo
+                chart.set_title({'name': titulo})
+                chart.set_legend({'position': 'bottom'})
+                chart.set_size({'width': 600, 'height': 400})
+                chart.set_style(11)
+                
+                # Insertar gráfico
+                worksheet_graficos.insert_chart(row_grafico, col_inicio + 3, chart)
+                
+                # Mover a siguiente posición
+                row_grafico += len(labels) + 25
+        
+        # Hoja 4: Estadísticas
+        if informe.get('estadisticas'):
+            worksheet_stats = workbook.add_worksheet('📈 Estadísticas')
+            worksheet_stats.write(0, 0, 'ESTADÍSTICAS GENERALES', title_format)
+            
+            row = 2
+            for stat_type, valores in informe['estadisticas'].items():
+                if valores:
+                    worksheet_stats.write(row, 0, stat_type.upper(), header_format)
+                    row += 1
+                    for campo, valor in valores.items():
+                        worksheet_stats.write(row, 0, campo)
+                        if isinstance(valor, (int, float)):
+                            worksheet_stats.write(row, 1, valor, number_format)
+                        else:
+                            worksheet_stats.write(row, 1, str(valor))
+                        row += 1
+                    row += 1
+    
+    output.seek(0)
+    return output
+
+def _enviar_informe_por_correo(informe: dict, excel_buffer: BytesIO, destinatarios: list):
+    """Enviar informe por correo con Excel y gráficos adjuntos"""
+    try:
+        # Validar configuración
+        if not app.config['MAIL_USERNAME']:
+            raise ValueError('Configuración de correo no disponible')
+        
+        # Crear mensaje
+        msg = Message(
+            subject=f'📊 Informe Personalizado: {informe["solicitud"]}',
+            recipients=destinatarios
+        )
+        
+        # Generar gráficos como imágenes
+        graficas_imagenes = []
+        if informe.get('graficos'):
+            graficas_imagenes = analysis_agent.generar_graficas_imagen(
+                informe['graficos'],
+                informe['reporte']
+            )
+        
+        # Construir HTML con gráficos incrustados
+        graficas_html = ""
+        for img_data in graficas_imagenes:
+            img_base64 = base64.b64encode(img_data['buffer'].read()).decode('utf-8')
+            img_data['buffer'].seek(0)
+            
+            graficas_html += f"""
+            <div style="margin: 30px 0; text-align: center; page-break-inside: avoid;">
+                <h3 style="color: #4285F4; margin-bottom: 15px;">{img_data['titulo']}</h3>
+                <img src="data:image/png;base64,{img_base64}" 
+                     style="max-width: 100%; height: auto; border: 2px solid #E8F0FE; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);" />
+            </div>
+            """
+        
+        # HTML del correo
+        msg.html = f"""
+        <html>
+        <head>
+            <style>
+                body {{ font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; line-height: 1.6; color: #333; }}
+                .header {{ background: linear-gradient(135deg, #4285F4 0%, #34A853 100%); color: white; padding: 30px; text-align: center; }}
+                .content {{ padding: 30px; background: #f5f5f5; }}
+                .info-box {{ background: white; padding: 20px; margin: 15px 0; border-left: 5px solid #4285F4; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }}
+                .summary {{ background: white; padding: 25px; margin: 20px 0; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); white-space: pre-wrap; }}
+                .footer {{ text-align: center; padding: 20px; color: #666; font-size: 12px; }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h1>📊 Informe Personalizado</h1>
+                <p style="margin: 10px 0;">{informe['reporte']}</p>
+            </div>
+            
+            <div class="content">
+                <div class="info-box">
+                    <h3 style="color: #4285F4; margin-top: 0;">Detalles del Informe</h3>
+                    <p><strong>Solicitud:</strong> {informe['solicitud']}</p>
+                    <p><strong>Fecha de Generación:</strong> {informe['fecha_generacion']}</p>
+                    <p><strong>Total de Registros:</strong> {informe['total_registros']:,}</p>
+                    <p><strong>Registros Procesados:</strong> {informe['registros_procesados']:,}</p>
+                </div>
+                
+                {'<div class="summary"><h3 style="color: #4285F4; margin-top: 0;">Resumen Ejecutivo</h3>' + informe.get('resumen_ejecutivo', 'No disponible') + '</div>' if informe.get('resumen_ejecutivo') else ''}
+                
+                <div style="background: white; padding: 25px; margin: 20px 0; border-radius: 8px;">
+                    <h2 style="color: #4285F4; margin-top: 0;">Visualizaciones</h2>
+                    {graficas_html}
+                </div>
+            </div>
+            
+            <div class="footer">
+                <p>Este es un mensaje automático del Sistema de Análisis con IA</p>
+                <p>Los datos completos están disponibles en el archivo Excel adjunto</p>
+            </div>
+        </body>
+        </html>
+        """
+        
+        # Adjuntar Excel
+        excel_buffer.seek(0)
+        msg.attach(
+            f'Informe_{informe["codigo"]}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx',
+            'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            excel_buffer.read()
+        )
+        
+        # Adjuntar gráficas PNG
+        for idx, img_data in enumerate(graficas_imagenes):
+            img_data['buffer'].seek(0)
+            msg.attach(
+                f'grafico_{idx+1}.png',
+                'image/png',
+                img_data['buffer'].read()
+            )
+        
+        # Enviar
+        mail.send(msg)
+        logger.info(f"Informe enviado a {len(destinatarios)} destinatario(s)")
+        
+    except Exception as e:
+        logger.error(f"Error enviando informe por correo: {e}")
+        raise
 
 # ============================================
 # INICIALIZACIÓN

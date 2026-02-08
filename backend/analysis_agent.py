@@ -657,3 +657,331 @@ Responde en español."""
         except Exception as e:
             logger.error(f"Error generando gráfica base64: {e}")
             return None
+    
+    def generar_informe_personalizado(self, codigo_reporte: str, solicitud: str):
+        """
+        Generar informe personalizado basado en solicitud en lenguaje natural
+        
+        Ejemplos de solicitud:
+        - "facturación semanal agrupada por tercero"
+        - "ventas mensuales por producto"
+        - "gastos por categoría en el último trimestre"
+        """
+        try:
+            # Obtener datos del reporte
+            reporte = self.db_manager.obtener_reporte(codigo_reporte)
+            if not reporte:
+                raise ValueError(f"Reporte {codigo_reporte} no encontrado")
+            
+            datos = self.db_manager.consultar_datos(codigo_reporte, limite=10000)
+            if not datos:
+                raise ValueError("No hay datos disponibles para generar el informe")
+            
+            df = pd.DataFrame([d['datos'] for d in datos])
+            
+            # Interpretar la solicitud usando IA
+            if self.openai_client:
+                analisis_solicitud = self._interpretar_solicitud_informe(solicitud, df.columns.tolist())
+            else:
+                # Interpretación básica sin IA
+                analisis_solicitud = self._interpretar_solicitud_basica(solicitud, df.columns.tolist())
+            
+            # Agrupar y procesar datos según la solicitud
+            df_procesado, agrupaciones = self._procesar_datos_segun_solicitud(df, analisis_solicitud)
+            
+            # Generar gráficos relevantes
+            graficos = self._generar_graficos_para_informe(df_procesado, agrupaciones, analisis_solicitud)
+            
+            # Generar resumen ejecutivo con IA
+            resumen_ejecutivo = ""
+            if self.openai_client:
+                resumen_ejecutivo = self._generar_resumen_ejecutivo(
+                    reporte['nombre'], 
+                    solicitud, 
+                    df_procesado, 
+                    agrupaciones
+                )
+            
+            return {
+                'reporte': reporte['nombre'],
+                'codigo': codigo_reporte,
+                'solicitud': solicitud,
+                'fecha_generacion': datetime.now().isoformat(),
+                'total_registros': len(datos),
+                'registros_procesados': len(df_procesado),
+                'agrupaciones': agrupaciones,
+                'analisis_solicitud': analisis_solicitud,
+                'datos_procesados': df_procesado.to_dict('records'),
+                'graficos': graficos,
+                'resumen_ejecutivo': resumen_ejecutivo,
+                'estadisticas': {
+                    'min': df_procesado.select_dtypes(include=['number']).min().to_dict() if len(df_procesado.select_dtypes(include=['number']).columns) > 0 else {},
+                    'max': df_procesado.select_dtypes(include=['number']).max().to_dict() if len(df_procesado.select_dtypes(include=['number']).columns) > 0 else {},
+                    'promedio': df_procesado.select_dtypes(include=['number']).mean().to_dict() if len(df_procesado.select_dtypes(include=['number']).columns) > 0 else {},
+                    'total': df_procesado.select_dtypes(include=['number']).sum().to_dict() if len(df_procesado.select_dtypes(include=['number']).columns) > 0 else {}
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generando informe personalizado: {e}")
+            raise
+    
+    def _interpretar_solicitud_informe(self, solicitud: str, columnas_disponibles: list):
+        """Usar IA para interpretar qué quiere el usuario"""
+        try:
+            prompt = f"""Analiza la siguiente solicitud de informe y extrae:
+1. Campo por el cual agrupar (debe ser uno de: {', '.join(columnas_disponibles)})
+2. Periodo temporal (diario, semanal, mensual, trimestral, anual, o ninguno)
+3. Métricas a calcular (suma, promedio, conteo, etc.)
+4. Tipo de visualización sugerida (barras, líneas, pastel, tabla)
+
+Solicitud: "{solicitud}"
+
+Columnas disponibles: {', '.join(columnas_disponibles)}
+
+Responde en formato JSON:
+{{
+    "campo_agrupacion": "nombre_del_campo",
+    "periodo_temporal": "semanal|mensual|ninguno",
+    "metricas": ["suma", "conteo"],
+    "visualizacion": "barras",
+    "campo_temporal": "nombre_campo_fecha_si_existe",
+    "campo_valor": "nombre_campo_numerico_principal"
+}}"""
+
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "Eres un asistente que interpreta solicitudes de informes y extrae parámetros structurados."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                response_format={"type": "json_object"}
+            )
+            
+            return json.loads(response.choices[0].message.content)
+            
+        except Exception as e:
+            logger.error(f"Error interpretando solicitud con IA: {e}")
+            return self._interpretar_solicitud_basica(solicitud, columnas_disponibles)
+    
+    def _interpretar_solicitud_basica(self, solicitud: str, columnas_disponibles: list):
+        """Interpretación básica sin IA"""
+        solicitud_lower = solicitud.lower()
+        
+        # Detectar periodo
+        periodo = "ninguno"
+        if "semanal" in solicitud_lower or "semana" in solicitud_lower:
+            periodo = "semanal"
+        elif "mensual" in solicitud_lower or "mes" in solicitud_lower:
+            periodo = "mensual"
+        elif "diario" in solicitud_lower or "dia" in solicitud_lower or "día" in solicitud_lower:
+            periodo = "diario"
+        
+        # Detectar campo de agrupación
+        campo_agrupacion = None
+        for col in columnas_disponibles:
+            if col.lower() in solicitud_lower:
+                campo_agrupacion = col
+                break
+        
+        # Si menciona "tercero", "cliente", "proveedor"
+        if not campo_agrupacion:
+            for col in columnas_disponibles:
+                if any(palabra in col.lower() for palabra in ['tercero', 'cliente', 'proveedor', 'nombre', 'razon']):
+                    campo_agrupacion = col
+                    break
+        
+        # Detectar campo de valor
+        campo_valor = None
+        for col in columnas_disponibles:
+            if any(palabra in col.lower() for palabra in ['total', 'valor', 'monto', 'importe', 'suma']):
+                campo_valor = col
+                break
+        
+        # Detectar campo temporal
+        campo_temporal = None
+        for col in columnas_disponibles:
+            if 'fecha' in col.lower() or 'f_' in col.lower():
+                campo_temporal =col
+                break
+        
+        return {
+            "campo_agrupacion": campo_agrupacion or columnas_disponibles[0],
+            "periodo_temporal": periodo,
+            "metricas": ["suma", "conteo"],
+            "visualizacion": "barras",
+            "campo_temporal": campo_temporal,
+            "campo_valor": campo_valor
+        }
+    
+    def _procesar_datos_segun_solicitud(self, df: pd.DataFrame, analisis: dict):
+        """Procesar y agrupar datos según el análisis de la solicitud"""
+        try:
+            campo_agrupacion = analisis.get('campo_agrupacion')
+            campo_valor = analisis.get('campo_valor')
+            campo_temporal = analisis.get('campo_temporal')
+            periodo = analisis.get('periodo_temporal', 'ninguno')
+            
+            # Validar que los campos existan
+            if campo_agrupacion not in df.columns:
+                campo_agrupacion = df.columns[0]
+            
+            # Si hay campo de valor numérico
+            if campo_valor and campo_valor in df.columns:
+                # Convertir a numérico si no lo es
+                df[campo_valor] = pd.to_numeric(df[campo_valor], errors='coerce')
+                
+                # Agrupar y sumar
+                df_agrupado = df.groupby(campo_agrupacion)[campo_valor].agg(['sum', 'count', 'mean']).reset_index()
+                df_agrupado.columns = [campo_agrupacion, 'Total', 'Cantidad', 'Promedio']
+                df_agrupado = df_agrupado.sort_values('Total', ascending=False)
+                
+                agrupaciones = {
+                    'tipo': 'valor_numerico',
+                    'campo_principal': campo_agrupacion,
+                    'campo_valor': campo_valor,
+                    'total_grupos': len(df_agrupado)
+                }
+            else:
+                # Solo contar ocurrencias
+                df_agrupado = df.groupby(campo_agrupacion).size().reset_index(name='Cantidad')
+                df_agrupado = df_agrupado.sort_values('Cantidad', ascending=False)
+                
+                agrupaciones = {
+                    'tipo': 'conteo',
+                    'campo_principal': campo_agrupacion,
+                    'total_grupos': len(df_agrupado)
+                }
+            
+            # Si hay periodo temporal, agregar análisis temporal
+            if periodo != 'ninguno' and campo_temporal and campo_temporal in df.columns:
+                try:
+                    df[campo_temporal] = pd.to_datetime(df[campo_temporal], errors='coerce')
+                    df = df.dropna(subset=[campo_temporal])
+                    
+                    if periodo == 'semanal':
+                        df['periodo'] = df[campo_temporal].dt.to_period('W').astype(str)
+                    elif periodo == 'mensual':
+                        df['periodo'] = df[campo_temporal].dt.to_period('M').astype(str)
+                    elif periodo == 'diario':
+                        df['periodo'] = df[campo_temporal].dt.date.astype(str)
+                    
+                    if 'periodo' in df.columns:
+                        agrupaciones['tiene_periodo_temporal'] = True
+                        agrupaciones['periodo'] = periodo
+                        
+                except Exception as e:
+                    logger.warning(f"No se pudo procesar campo temporal: {e}")
+            
+            return df_agrupado, agrupaciones
+            
+        except Exception as e:
+            logger.error(f"Error procesando datos: {e}")
+            # Fallback: retornar datos originales
+            return df.head(100), {'tipo': 'sin_agrupacion'}
+    
+    def _generar_graficos_para_informe(self, df: pd.DataFrame, agrupaciones: dict, analisis: dict):
+        """Generar gráficos relevantes para el informe"""
+        graficos = []
+        
+        try:
+            campo_principal = agrupaciones.get('campo_principal', df.columns[0])
+            
+            # Limitar a top 15 para visualización
+            df_top = df.head(15)
+            
+            # Gráfico principal (barras)
+            if 'Total' in df_top.columns:
+                graficos.append({
+                    'tipo': 'bar',
+                    'titulo': f'Top 15 {campo_principal} por Total',
+                    'labels': df_top[campo_principal].astype(str).tolist(),
+                    'datos': df_top['Total'].tolist(),
+                    'columna': 'Total'
+                })
+                
+                # Gráfico de pastel para distribución (solo top 10)
+                df_pie = df.head(10)
+                if len(df_pie) > 1:
+                    graficos.append({
+                        'tipo': 'pie',
+                        'titulo': f'Distribución Top 10 - {campo_principal}',
+                        'labels': df_pie[campo_principal].astype(str).tolist(),
+                        'datos': df_pie['Total'].tolist(),
+                        'columna': 'Total'
+                    })
+            
+            elif 'Cantidad' in df_top.columns:
+                graficos.append({
+                    'tipo': 'bar',
+                    'titulo': f'Top 15 {campo_principal} por Cantidad',
+                    'labels': df_top[campo_principal].astype(str).tolist(),
+                    'datos': df_top['Cantidad'].tolist(),
+                    'columna': 'Cantidad'
+                })
+            
+            # Si hay promedio, agregar gráfico
+            if 'Promedio' in df_top.columns:
+                graficos.append({
+                    'tipo': 'bar',
+                    'titulo': f'Promedio por {campo_principal}',
+                    'labels': df_top[campo_principal].astype(str).tolist(),
+                    'datos': df_top['Promedio'].tolist(),
+                    'columna': 'Promedio'
+                })
+            
+        except Exception as e:
+            logger.error(f"Error generando gráficos para informe: {e}")
+        
+        return graficos
+    
+    def _generar_resumen_ejecutivo(self, nombre_reporte: str, solicitud: str, df: pd.DataFrame, agrupaciones: dict):
+        """Generar resumen ejecutivo con IA"""
+        try:
+            # Preparar estadísticas para la IA
+            stats = {
+                'total_grupos': len(df),
+                'top_5': df.head(5).to_dict('records')
+            }
+            
+            if 'Total' in df.columns:
+                stats['total_general'] = float(df['Total'].sum())
+                stats['promedio_general'] = float(df['Total'].mean())
+                stats['top_contribuidor'] = {
+                    'nombre': str(df.iloc[0][agrupaciones['campo_principal']]),
+                    'valor': float(df.iloc[0]['Total'])
+                }
+            
+            prompt = f"""Genera un resumen ejecutivo profesional para el siguiente informe:
+
+Reporte: {nombre_reporte}
+Solicitud del usuario: {solicitud}
+
+Estadísticas:
+{json.dumps(stats, indent=2, default=str)}
+
+El resumen debe incluir:
+1. Hallazgos principales (3-5 puntos)
+2. Tendencias identificadas
+3. Recomendaciones clave
+4. Datos destacados
+
+Usa un tono profesional y conciso. Máximo 400 palabras.
+Responde en español."""
+
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "Eres un analista de negocios experto en generar resúmenes ejecutivos claros y accionables."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=600
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            logger.error(f"Error generando resumen ejecutivo: {e}")
+            return "Resumen ejecutivo no disponible."
