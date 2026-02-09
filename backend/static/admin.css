@@ -740,6 +740,32 @@ body {
   color: #7b1fa2;
 }
 
+/* Botones de acción en el chat */
+.chat-message button {
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.chat-message button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+  filter: brightness(1.1);
+}
+
+.chat-message button:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* Código en los mensajes */
+.chat-message code {
+  background: rgba(0, 0, 0, 0.05);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-family: "Courier New", monospace;
+  font-size: 0.9em;
+}
+
 /* Estadísticas */
 .stat-card {
   background: white;
@@ -755,4 +781,142 @@ body {
   margin-bottom: 10px;
   text-transform: uppercase;
   letter-spacing: 1px;
+}
+
+/* Badge de notificaciones */
+.badge-notif {
+  background: #dc3545;
+  color: white;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 0.75rem;
+  font-weight: bold;
+  margin-left: auto;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.1);
+  }
+}
+
+/* Menuitem con badge */
+.menu li {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* Cards de aclaraciones */
+.aclaracion-card {
+  background: white;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 15px;
+  border-left: 4px solid #0066cc;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  transition:
+    transform 0.2s,
+    box-shadow 0.2s;
+}
+
+.aclaracion-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+.aclaracion-card.pendiente {
+  border-left-color: #ffc107;
+}
+
+.aclaracion-card.respondida {
+  border-left-color: #17a2b8;
+}
+
+.aclaracion-card.aprobada {
+  border-left-color: #28a745;
+}
+
+.aclaracion-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 15px;
+}
+
+.aclaracion-meta {
+  font-size: 0.9em;
+  color: #666;
+}
+
+.aclaracion-body {
+  margin: 15px 0;
+}
+
+.aclaracion-pregunta {
+  background: #fff3cd;
+  padding: 12px;
+  border-radius: 6px;
+  margin: 10px 0;
+  border-left: 3px solid #ffc107;
+}
+
+.aclaracion-respuesta {
+  background: #d1ecf1;
+  padding: 12px;
+  border-radius: 6px;
+  margin: 10px 0;
+  border-left: 3px solid #17a2b8;
+}
+
+.aclaracion-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid #eee;
+}
+
+.estado-badge {
+  display: inline-block;
+  padding: 4px 12px;
+  border-radius: 12px;
+  font-size: 0.85em;
+  font-weight: 600;
+}
+
+.estado-badge.pendiente {
+  background: #fff3cd;
+  color: #856404;
+}
+
+.estado-badge.respondida {
+  background: #d1ecf1;
+  color: #0c5460;
+}
+
+.estado-badge.aprobada {
+  background: #d4edda;
+  color: #155724;
+}
+
+/* Info box */
+.info-box {
+  border-left: 4px solid #0066cc;
+  padding-left: 15px;
+}
+
+.info-box p {
+  margin: 8px 0;
+}
+
+.info-box strong {
+  color: #333;
 }

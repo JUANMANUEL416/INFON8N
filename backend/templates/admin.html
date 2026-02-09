@@ -19,6 +19,15 @@
           </li>
           <li data-section="datos"><span>💾</span> Ver Datos</li>
           <li data-section="analisis"><span>🤖</span> Análisis IA</li>
+          <li data-section="aclaraciones">
+            <span>💭</span> Aclaraciones
+            <span
+              id="badge-aclaraciones"
+              class="badge-notif"
+              style="display: none"
+              >0</span
+            >
+          </li>
           <li data-section="usuarios"><span>👥</span> Usuarios</li>
         </ul>
         <div class="user-info">
@@ -388,6 +397,92 @@
                   <div id="busqueda-contenido"></div>
                 </div>
               </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Sección: Aclaraciones y Validaciones IA -->
+        <section id="aclaraciones-section" class="section">
+          <header class="section-header">
+            <h1>💭 Aclaraciones y Validaciones IA</h1>
+            <button class="btn btn-info" onclick="cargarAclaraciones()">
+              🔄 Actualizar
+            </button>
+          </header>
+
+          <div class="stats-cards" style="margin-bottom: 20px">
+            <div class="stat-card">
+              <h3>Pendientes de Usuario</h3>
+              <div class="stat-value" id="stat-aclaraciones-pendientes">0</div>
+            </div>
+            <div class="stat-card">
+              <h3>Pendientes de Validación</h3>
+              <div class="stat-value" id="stat-aclaraciones-validacion">0</div>
+            </div>
+            <div class="stat-card">
+              <h3>Aprobadas Hoy</h3>
+              <div class="stat-value" id="stat-aclaraciones-aprobadas">0</div>
+            </div>
+          </div>
+
+          <!-- Tabs de Aclaraciones -->
+          <div class="tabs">
+            <button
+              class="tab-btn active"
+              onclick="cambiarTabAclaraciones('pendientes')"
+            >
+              ⏳ Pendientes de Respuesta
+            </button>
+            <button
+              class="tab-btn"
+              onclick="cambiarTabAclaraciones('validacion')"
+            >
+              ✅ Requieren Validación Admin
+            </button>
+            <button
+              class="tab-btn"
+              onclick="cambiarTabAclaraciones('aprobadas')"
+            >
+              📚 Base de Conocimiento
+            </button>
+          </div>
+
+          <!-- Tab: Pendientes de Respuesta -->
+          <div
+            id="tab-aclaraciones-pendientes"
+            class="tab-content active"
+            style="margin-top: 20px"
+          >
+            <div id="lista-aclaraciones-pendientes">
+              <p style="text-align: center; color: #666">
+                Cargando aclaraciones...
+              </p>
+            </div>
+          </div>
+
+          <!-- Tab: Requieren Validación Admin -->
+          <div
+            id="tab-aclaraciones-validacion"
+            class="tab-content"
+            style="margin-top: 20px"
+          >
+            <div id="lista-aclaraciones-validacion">
+              <p style="text-align: center; color: #666">
+                Cargando aclaraciones para validar...
+              </p>
+            </div>
+          </div>
+
+          <!-- Tab: Base de Conocimiento -->
+          <div
+            id="tab-aclaraciones-aprobadas"
+            class="tab-content"
+            style="margin-top: 20px"
+          >
+            <div id="lista-base-conocimiento">
+              <p style="text-align: center; color: #666">
+                Cargando base de conocimiento...
+              </p>
             </div>
           </div>
         </section>
@@ -842,6 +937,120 @@ LIMIT {limite}"
               </button>
               <button type="submit" class="btn btn-primary">
                 Guardar Grupo
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Validar Aclaración -->
+    <div id="modal-validar-aclaracion" class="modal">
+      <div class="modal-overlay" onclick="cerrarModalValidarAclaracion()"></div>
+      <div class="modal-dialog" style="max-width: 700px">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2>✅ Validar Aclaración</h2>
+            <button class="close-btn" onclick="cerrarModalValidarAclaracion()">
+              ×
+            </button>
+          </div>
+
+          <form
+            id="form-validar-aclaracion"
+            onsubmit="validarAclaracion(event)"
+          >
+            <div class="modal-body">
+              <input type="hidden" id="validar-aclaracion-id" />
+
+              <div
+                class="info-box"
+                style="
+                  background: #f0f8ff;
+                  padding: 15px;
+                  border-radius: 8px;
+                  margin-bottom: 20px;
+                "
+              >
+                <h3 style="margin-top: 0; color: #0066cc">
+                  📋 Información del Campo
+                </h3>
+                <p>
+                  <strong>Reporte:</strong>
+                  <span id="validar-reporte-codigo"></span>
+                </p>
+                <p>
+                  <strong>Campo:</strong>
+                  <span id="validar-nombre-campo"></span>
+                </p>
+              </div>
+
+              <div class="form-group">
+                <label><strong>❓ Pregunta de la IA:</strong></label>
+                <div
+                  id="validar-pregunta-ia"
+                  style="
+                    background: #fff3cd;
+                    padding: 10px;
+                    border-radius: 5px;
+                    margin-top: 5px;
+                  "
+                ></div>
+              </div>
+
+              <div class="form-group">
+                <label><strong>💬 Respuesta del Usuario:</strong></label>
+                <div
+                  id="validar-respuesta-usuario"
+                  style="
+                    background: #d1ecf1;
+                    padding: 10px;
+                    border-radius: 5px;
+                    margin-top: 5px;
+                  "
+                ></div>
+                <p style="font-size: 0.9em; color: #666; margin-top: 5px">
+                  Por: <span id="validar-usuario"></span> •
+                  <span id="validar-fecha"></span>
+                </p>
+              </div>
+
+              <div class="form-group">
+                <label for="validar-respuesta-final">
+                  <strong>✏️ Tu Respuesta (Admin):</strong>
+                </label>
+                <textarea
+                  id="validar-respuesta-final"
+                  class="form-control"
+                  rows="4"
+                  placeholder="Puedes aprobar la respuesta del usuario o mejorarla..."
+                  required
+                  style="resize: vertical"
+                ></textarea>
+                <p style="font-size: 0.9em; color: #666; margin-top: 5px">
+                  💡 Esta respuesta se guardará en la base de conocimiento para
+                  mejorar futuras validaciones de IA
+                </p>
+              </div>
+
+              <div class="form-group">
+                <label>
+                  <input type="checkbox" id="validar-aprobar" checked />
+                  Aprobar y agregar a base de conocimiento
+                </label>
+              </div>
+            </div>
+
+            <div class="modal-footer">
+              <button
+                type="button"
+                class="btn btn-secondary"
+                onclick="cerrarModalValidarAclaracion()"
+              >
+                Cancelar
+              </button>
+              <button type="submit" class="btn btn-success">
+                ✅ Validar y Guardar
               </button>
             </div>
           </form>

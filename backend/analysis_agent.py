@@ -76,13 +76,10 @@ class DataAnalysisAgent:
             
             # Crear o obtener colección
             collection_name = f"reporte_{codigo_reporte.replace(' ', '_')}"
-            try:
-                collection = self.chroma_client.get_collection(collection_name)
-            except:
-                collection = self.chroma_client.create_collection(
-                    name=collection_name,
-                    metadata={"reporte": codigo_reporte}
-                )
+            collection = self.chroma_client.get_or_create_collection(
+                name=collection_name,
+                metadata={"reporte": codigo_reporte}
+            )
             
             # Preparar documentos para indexar
             documents = []
@@ -127,7 +124,9 @@ class DataAnalysisAgent:
             }
             
         except Exception as e:
+            import traceback
             logger.error(f"Error indexando datos: {e}")
+            logger.error(f"Traceback: {traceback.format_exc()}")
             raise
     
     def consultar_con_lenguaje_natural(self, codigo_reporte: str, pregunta: str, limite: int = 5):
@@ -136,8 +135,16 @@ class DataAnalysisAgent:
             collection_name = f"reporte_{codigo_reporte.replace(' ', '_')}"
             
             try:
-                collection = self.chroma_client.get_collection(collection_name)
-            except:
+                collection = self.chroma_client.get_or_create_collection(
+                    name=collection_name,
+                    metadata={"reporte": codigo_reporte}
+                )
+                # Si la colección existe pero está vacía, indexar
+                if collection.count() == 0:
+                    self.indexar_datos_reporte(codigo_reporte)
+                    collection = self.chroma_client.get_collection(collection_name)
+            except Exception as e:
+                logger.error(f"Error al obtener/crear colección: {e}")
                 # Si no existe, indexar primero
                 self.indexar_datos_reporte(codigo_reporte)
                 collection = self.chroma_client.get_collection(collection_name)
@@ -237,7 +244,16 @@ Muestra: {json.dumps(resumen['muestra_datos'], indent=2)}"""
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": "Eres un analista de datos experto que proporciona insights valiosos y recomendaciones basadas en datos."},
+                    {"role": "system", "content": """Eres un analista de datos experto con capacidades avanzadas de visualización.
+                    
+Capacidades del sistema:
+                    - Generas gráficos profesionales (barras, torta, líneas) automáticamente
+                    - Exportas informes a Excel con gráficos nativos incrustados
+                    - Creas visualizaciones con matplotlib, seaborn y xlsxwriter
+                    - Envías informes por correo electrónico con adjuntos
+                    
+                    Cuando te soliciten gráficos, reportes Excel o visualizaciones, SIEMPRE confirma que puedes hacerlo.
+                    Proporciona insights valiosos y recomendaciones basadas en datos."""},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,
@@ -330,29 +346,89 @@ Muestra: {json.dumps(resumen['muestra_datos'], indent=2)}"""
             palabras_grafico = ['gráfico', 'grafico', 'gráfica', 'grafica', 'chart', 'visualiza', 'visualización', 'muestra', 'diagrama', 'top', 'ranking']
             solicita_grafico = any(palabra in pregunta.lower() for palabra in palabras_grafico)
             
+            # Preparar estadísticas útiles del DataFrame
+            stats_columnas = {}
+            for col in df_datos.columns:
+                if pd.api.types.is_numeric_dtype(df_datos[col]):
+                    stats_columnas[col] = {
+                        'tipo': 'numérico',
+                        'total': float(df_datos[col].sum()),
+                        'promedio': float(df_datos[col].mean()),
+                        'max': float(df_datos[col].max()),
+                        'min': float(df_datos[col].min())
+                    }
+                else:
+                    valores_unicos = df_datos[col].nunique()
+                    stats_columnas[col] = {
+                        'tipo': 'texto',
+                        'valores_unicos': int(valores_unicos),
+                        'top_5': df_datos[col].value_counts().head(5).to_dict() if valores_unicos < 100 else None
+                    }
+            
             # Preparar prompt con contexto
             prompt = f"""Responde la siguiente pregunta sobre el reporte "{reporte['nombre']}":
 
 PREGUNTA: {pregunta}
 
-CONTEXTO (datos relevantes encontrados):
-{json.dumps(contexto['resultados'], indent=2, ensure_ascii=False)}
+DATOS DISPONIBLES:
+- Total de registros analizables: {len(datos)}
+- Columnas: {', '.join(df_datos.columns.tolist())}
 
-ESTADÍSTICAS GENERALES:
-- Total de registros: {len(datos)}
-- Columnas disponibles: {', '.join(df_datos.columns.tolist())}
+ESTADÍSTICAS POR COLUMNA:
+{json.dumps(stats_columnas, indent=2, ensure_ascii=False, default=str)}
 
-Proporciona una respuesta clara, precisa y basada en los datos. Si la respuesta requiere cálculos, hazlos. Si no hay suficiente información, indícalo claramente.
-Responde en español."""
+MUESTRA DE DATOS (primeros 5 registros):
+{df_datos.head(5).to_dict('records')}
+
+INSTRUCCIONES:
+- Tienes acceso COMPLETO a {len(datos)} registros del reporte
+- Puedes calcular sumas, promedios, conteos, agrupaciones, etc.
+- Si necesitas hacer un análisis, HAZLO con los datos disponibles
+- Si la pregunta pide gráficos o visualizaciones, confirma que puedes generarlos
+- Sé específico con números y resultados
+- Responde en español de forma clara y profesional"""
 
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": "Eres un asistente de análisis de datos. Respondes preguntas basándote en los datos proporcionados de manera precisa y profesional."},
+                    {"role": "system", "content": """Eres un analista de datos experto con acceso COMPLETO a los datos del reporte.
+
+CAPACIDADES CONFIRMADAS:
+✅ Tienes acceso a TODOS los registros del reporte (no solo una muestra)
+✅ Puedes calcular estadísticas: sumas, promedios, máximos, mínimos, conteos
+✅ Puedes hacer agrupaciones y análisis complejos
+✅ Puedes crear visualizaciones de datos usando formato de texto
+
+FORMATO DE RESPUESTA:
+❌ NUNCA describas el proceso paso a paso
+❌ NUNCA muestres código Python ni menciones funciones técnicas
+❌ NUNCA digas "voy a generar", "he generado", "puedes descargar"
+✅ SOLO presenta los RESULTADOS finales
+✅ Usa formato limpio: títulos, listas, tablas de texto, emojis
+✅ Si piden gráfico: MUÉSTRALO en formato visual de texto (barras con caracteres, tablas)
+✅ Si piden Excel: Entonces di "Preparando archivo Excel para descarga..."
+
+EJEMPLO DE GRÁFICO EN TEXTO:
+"📊 Distribución de Facturación por Estado:
+
+Activo    ████████████████████ $45,234,567 (67%)
+Inactivo  ██████████ $22,118,433 (33%)
+
+💡 El estado 'Activo' representa dos tercios del valor total."
+
+EJEMPLO INCORRECTO:
+"He generado un gráfico de barras... puedes descargar el archivo Excel..."
+
+INSTRUCCIONES CRÍTICAS:
+- NUNCA digas "no tengo acceso" - SÍ tienes acceso completo
+- NUNCA digas "necesito más información" - toda la info está en el contexto
+- SIEMPRE realiza cálculos cuando se te pidan
+- Responde SOLO con resultados, sin describir procesos
+- Responde en español con números específicos y precisos"""},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,
-                max_tokens=1000
+                temperature=0.2,
+                max_tokens=1500
             )
             
             respuesta = response.choices[0].message.content
@@ -381,85 +457,153 @@ Responde en español."""
         try:
             pregunta_lower = pregunta.lower()
             
+            # Detectar tipo de gráfico solicitado
+            tipo_grafico = 'bar'  # Por defecto barras
+            if any(palabra in pregunta_lower for palabra in ['torta', 'pie', 'pastel', 'circular']):
+                tipo_grafico = 'pie'
+            
             # Detectar números solicitados (top 5, top 10, etc.)
             import re
             numeros = re.findall(r'\d+', pregunta)
             limite = int(numeros[0]) if numeros else 10
             limite = min(limite, 20)  # Máximo 20 elementos
             
-            # Detectar tipo de análisis
-            if 'cliente' in pregunta_lower or 'razonsocial' in pregunta_lower or 'razon' in pregunta_lower:
-                columna = 'razonsocial'
-                valor_col = None
-                
-                # Buscar columna de valor (factura, total, monto, etc.)
-                if 'factur' in pregunta_lower or 'total' in pregunta_lower or 'vr_total' in df.columns:
-                    valor_col = 'vr_total'
-                elif 'venta' in pregunta_lower or 'monto' in pregunta_lower:
-                    for col in df.columns:
-                        if 'total' in col.lower() or 'valor' in col.lower():
-                            valor_col = col
-                            break
-                
-                if columna in df.columns and valor_col and valor_col in df.columns:
-                    # Agrupar por cliente y sumar
-                    top_clientes = df.groupby(columna)[valor_col].sum().nlargest(limite)
+            # Para gráfico de torta, limitar a máximo 8 segmentos
+            if tipo_grafico == 'pie':
+                limite = min(limite, 8)
+            
+            columna_objetivo = None
+            valor_col = None
+            agrupar_por_tiempo = None
+            
+            # Detectar agrupación temporal
+            if any(palabra in pregunta_lower for palabra in ['semana', 'semanal', 'semanas']):
+                agrupar_por_tiempo = 'semana'
+            elif any(palabra in pregunta_lower for palabra in ['mes', 'mensual', 'meses']):
+                agrupar_por_tiempo = 'mes'
+            elif any(palabra in pregunta_lower for palabra in ['dia', 'diario', 'dias', 'día', 'días']):
+                agrupar_por_tiempo = 'dia'
+            elif any(palabra in pregunta_lower for palabra in ['año', 'anual', 'años']):
+                agrupar_por_tiempo = 'año'
+            
+            # Palabras clave para detectar qué columna analizar
+            palabras_busqueda = {
+                'tipo': ['tipo', 'tipos', 'categoria', 'categoría', 'clase'],
+                'cliente': ['cliente', 'razonsocial', 'razon', 'tercero', 'terceros'],
+                'sede': ['sede', 'sedes', 'sucursal'],
+                'estado': ['estado', 'estados', 'estatus'],
+                'vendedor': ['vendedor', 'vendedora', 'comercial'],
+                'producto': ['producto', 'productos', 'item', 'referencia'],
+                'fecha': ['fecha', 'periodo']
+            }
+            
+            # Buscar columna de fecha para agrupación temporal
+            columna_fecha = None
+            if agrupar_por_tiempo:
+                for col in df.columns:
+                    col_lower = col.lower()
+                    if 'fecha' in col_lower or 'f_' in col_lower or 'date' in col_lower:
+                        columna_fecha = col
+                        break
+            
+            # Buscar columna de valor numérico para agrupar
+            palabras_valor = ['factur', 'total', 'valor', 'venta', 'monto', 'precio', 'vr_']
+            for col in df.columns:
+                col_lower = col.lower()
+                if pd.api.types.is_numeric_dtype(df[col]) and any(palabra in col_lower for palabra in palabras_valor):
+                    valor_col = col
+                    break
+            
+            # Si se pide agrupación temporal y hay columna de fecha
+            if agrupar_por_tiempo and columna_fecha and columna_fecha in df.columns:
+                try:
+                    # Convertir a datetime si no lo es
+                    if not pd.api.types.is_datetime64_any_dtype(df[columna_fecha]):
+                        df[columna_fecha] = pd.to_datetime(df[columna_fecha], errors='coerce')
+                    
+                    # Agrupar según el período
+                    if agrupar_por_tiempo == 'semana':
+                        df['periodo'] = df[columna_fecha].dt.isocalendar().week.astype(str) + '-' + df[columna_fecha].dt.year.astype(str)
+                        titulo_periodo = 'Semanas'
+                    elif agrupar_por_tiempo == 'mes':
+                        df['periodo'] = df[columna_fecha].dt.strftime('%Y-%m')
+                        titulo_periodo = 'Meses'
+                    elif agrupar_por_tiempo == 'dia':
+                        df['periodo'] = df[columna_fecha].dt.strftime('%Y-%m-%d')
+                        titulo_periodo = 'Días'
+                    else:  # año
+                        df['periodo'] = df[columna_fecha].dt.year.astype(str)
+                        titulo_periodo = 'Años'
+                    
+                    if valor_col and valor_col in df.columns:
+                        agrupado = df.groupby('periodo')[valor_col].sum().nlargest(limite)
+                    else:
+                        agrupado = df['periodo'].value_counts().head(limite)
                     
                     return {
-                        'tipo': 'bar',
-                        'titulo': f'Top {limite} Clientes que Más Facturan',
-                        'labels': top_clientes.index.tolist(),
-                        'datos': top_clientes.values.tolist(),
-                        'columna': columna
+                        'tipo': tipo_grafico,
+                        'titulo': f'Facturación por {titulo_periodo}',
+                        'labels': [str(x) for x in agrupado.index.tolist()],
+                        'datos': agrupado.values.tolist(),
+                        'columna': titulo_periodo
+                    }
+                except Exception as e:
+                    logger.error(f"Error agrupando por tiempo: {e}")
+                    # Continuar con la lógica normal
+            
+            # Buscar qué tipo de análisis pide el usuario
+            for categoria, palabras in palabras_busqueda.items():
+                if any(palabra in pregunta_lower for palabra in palabras):
+                    # Buscar columna que coincida
+                    for col in df.columns:
+                        col_lower = col.lower()
+                        if any(palabra in col_lower for palabra in palabras):
+                            columna_objetivo = col
+                            break
+                    if columna_objetivo:
+                        break
+            
+            # Si no encontró columna específica, buscar por nombre exacto en la pregunta
+            if not columna_objetivo:
+                for col in df.columns:
+                    if col.lower() in pregunta_lower:
+                        columna_objetivo = col
+                        break
+            
+            # Si encontró columna objetivo
+            if columna_objetivo and columna_objetivo in df.columns:
+                # Si hay columna de valor, agrupar y sumar
+                if valor_col and valor_col in df.columns:
+                    agrupado = df.groupby(columna_objetivo)[valor_col].sum().nlargest(limite)
+                    
+                    return {
+                        'tipo': tipo_grafico,
+                        'titulo': f'Top {limite} por {columna_objetivo}',
+                        'labels': [str(x) for x in agrupado.index.tolist()],
+                        'datos': agrupado.values.tolist(),
+                        'columna': columna_objetivo
+                    }
+                else:
+                    # Si no hay valor, hacer conteo
+                    conteo = df[columna_objetivo].value_counts().head(limite)
+                    
+                    return {
+                        'tipo': tipo_grafico,
+                        'titulo': f'Top {limite} - {columna_objetivo}',
+                        'labels': [str(x) for x in conteo.index.tolist()],
+                        'datos': conteo.values.tolist(),
+                        'columna': columna_objetivo
                     }
             
-            # Detectar análisis por sede
-            if 'sede' in pregunta_lower:
-                if 'idsede' in df.columns:
-                    columna = 'idsede'
-                elif 'sede' in df.columns:
-                    columna = 'sede'
-                else:
-                    columna = None
-                
-                if columna:
-                    value_counts = df[columna].value_counts().head(limite)
+            # Si no encontró nada específico, hacer gráfico de la primera columna de texto
+            for col in df.columns:
+                if not pd.api.types.is_numeric_dtype(df[col]):
+                    value_counts = df[col].value_counts().head(limite)
                     return {
-                        'tipo': 'pie' if limite <= 8 else 'bar',
-                        'titulo': f'Distribución por Sede',
+                        'tipo': tipo_grafico,
+                        'titulo': f'Top {limite} - {col}',
                         'labels': [str(x) for x in value_counts.index.tolist()],
                         'datos': value_counts.values.tolist(),
-                        'columna': columna
-                    }
-            
-            # Detectar análisis por fecha
-            if 'fecha' in pregunta_lower or 'mes' in pregunta_lower or 'periodo' in pregunta_lower:
-                for col in df.columns:
-                    if 'fecha' in col.lower() or 'f_' in col.lower():
-                        value_counts = df[col].value_counts().head(limite)
-                        return {
-                            'tipo': 'bar',
-                            'titulo': f'Distribución por {col}',
-                            'labels': [str(x) for x in value_counts.index.tolist()],
-                            'datos': value_counts.values.tolist(),
-                            'columna': col
-                        }
-            
-            # Detectar análisis general de una columna
-            for col in df.columns:
-                if col.lower() in pregunta_lower:
-                    if df[col].dtype in ['int64', 'float64']:
-                        # Si es numérica, hacer top valores
-                        top_values = df[col].value_counts().head(limite)
-                    else:
-                        # Si es texto, hacer distribución
-                        top_values = df[col].value_counts().head(limite)
-                    
-                    return {
-                        'tipo': 'bar',
-                        'titulo': f'Top {limite} - {col}',
-                        'labels': [str(x) for x in top_values.index.tolist()],
-                        'datos': top_values.values.tolist(),
                         'columna': col
                     }
             
@@ -752,7 +896,15 @@ Responde en formato JSON:
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": "Eres un asistente que interpreta solicitudes de informes y extrae parámetros structurados."},
+                    {"role": "system", "content": """Eres un asistente especializado en interpretar solicitudes de informes.
+                    
+                    El sistema puede generar:
+                    - Gráficos de barras, torta, líneas para cualquier métrica
+                    - Reportes Excel profesionales con 4 hojas (Resumen, Datos, Gráficos, Estadísticas)
+                    - Análisis agrupados por cualquier campo
+                    - Exportación y envío por correo
+                    
+                    Extrae los parámetros estructurados de la solicitud del usuario."""},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
@@ -953,7 +1105,7 @@ Responde en formato JSON:
                     'valor': float(df.iloc[0]['Total'])
                 }
             
-            prompt = f"""Genera un resumen ejecutivo profesional para el siguiente informe:
+            prompt = f"""Genera un resumen ejecutivo CONCISO y ENFOCADO EN RESULTADOS para el siguiente informe:
 
 Reporte: {nombre_reporte}
 Solicitud del usuario: {solicitud}
@@ -961,23 +1113,41 @@ Solicitud del usuario: {solicitud}
 Estadísticas:
 {json.dumps(stats, indent=2, default=str)}
 
-El resumen debe incluir:
-1. Hallazgos principales (3-5 puntos)
-2. Tendencias identificadas
-3. Recomendaciones clave
-4. Datos destacados
+⚠️ FORMATO REQUERIDO:
+- SOLO presenta hallazgos y resultados finales
+- NO menciones el archivo Excel ni proceso de generación
+- NO uses frases como "he generado", "se incluye", "archivo adjunto"
+- Usa lenguaje ejecutivo directo: "El análisis muestra que..."
 
-Usa un tono profesional y conciso. Máximo 400 palabras.
-Responde en español."""
+Estructura requerida:
+1. 📊 HALLAZGOS PRINCIPALES (2-3 puntos clave con datos)
+2. 💡 INSIGHTS (tendencias o patrones identificados)
+3. 🎯 RECOMENDACIONES (1-2 acciones sugeridas)
+
+Máximo 250 palabras. Responde en español."""
 
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
-                    {"role": "system", "content": "Eres un analista de negocios experto en generar resúmenes ejecutivos claros y accionables."},
+                    {"role": "system", "content": """Eres un analista de negocios senior que presenta solo RESULTADOS finales.
+
+PROHIBIDO mencionar:
+❌ "He generado un gráfico..."
+❌ "Puedes descargar el archivo..."
+❌ "El archivo Excel incluye..."
+❌ Cualquier referencia a procesos técnicos
+
+OBLIGATORIO:
+✅ Presentar solo hallazgos y datos
+✅ Usar lenguaje ejecutivo conciso
+✅ Enfocarse en insights de negocio
+✅ Incluir números específicos
+                    
+Genera resúmenes ejecutivos 100% enfocados en resultados, sin mencionar procesos ni archivos."""},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.7,
-                max_tokens=600
+                max_tokens=400
             )
             
             return response.choices[0].message.content
@@ -985,3 +1155,175 @@ Responde en español."""
         except Exception as e:
             logger.error(f"Error generando resumen ejecutivo: {e}")
             return "Resumen ejecutivo no disponible."
+    
+    # ========== SISTEMA DE VALIDACIÓN Y ACLARACIONES ==========
+    
+    def validar_reporte_con_ia(self, campos_config: List[Dict]) -> Dict:
+        """
+        Valida la configuración de campos del reporte con IA
+        Detecta campos ambiguos o que requieren aclaración
+        
+        Args:
+            campos_config: Lista de configuraciones de campos del reporte
+            
+        Returns:
+            Dict con:
+                - aprobado: bool
+                - puntuacion_claridad: float (0-100)
+                - campos_dudosos: List[Dict] con campos que necesitan aclaración
+                - sugerencias: List[str] con sugerencias generales
+        """
+        try:
+            # Construir contexto de los campos
+            campos_info = []
+            for campo in campos_config:
+                campos_info.append({
+                    'nombre': campo.get('nombre', ''),
+                    'tipo': campo.get('tipo', ''),
+                    'descripcion': campo.get('descripcion', ''),
+                    'obligatorio': campo.get('obligatorio', False)
+                })
+            
+            # Prompt para validación
+            prompt = f'''Eres un validador experto de configuraciones de reportes. 
+            
+Analiza la siguiente configuración de campos y determina:
+1. Si algún nombre de campo es ambiguo o poco claro
+2. Si las descripciones son suficientes
+3. Puntuación de claridad general (0-100)
+4. Qué campos necesitan aclaración del usuario
+
+Campos a validar:
+{json.dumps(campos_info, indent=2, ensure_ascii=False)}
+
+Responde ÚNICAMENTE con JSON válido en este formato:
+{{
+    "aprobado": true/false,
+    "puntuacion_claridad": 0-100,
+    "campos_dudosos": [
+        {{
+            "nombre": "nombre_campo",
+            "razon": "por qué es ambiguo",
+            "severidad": "alta/media/baja"
+        }}
+    ],
+    "sugerencias": ["sugerencia 1", "sugerencia 2"]
+}}'''
+
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "Eres un validador experto. Respondes SOLO con JSON válido."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=1000,
+                response_format={"type": "json_object"}
+            )
+            
+            resultado = json.loads(response.choices[0].message.content)
+            logger.info(f"Validación completada. Puntuación: {resultado.get('puntuacion_claridad', 0)}")
+            
+            return resultado
+            
+        except Exception as e:
+            logger.error(f"Error validando reporte con IA: {e}")
+            return {
+                "aprobado": True,
+                "puntuacion_claridad": 50,
+                "campos_dudosos": [],
+                "sugerencias": [f"Error en validación: {str(e)}"]
+            }
+    
+    def generar_pregunta_aclaracion(self, nombre_campo: str, tipo_campo: str, 
+                                   descripcion: str = "", razon: str = "") -> str:
+        """
+        Genera una pregunta clara para solicitar aclaración sobre un campo
+        
+        Args:
+            nombre_campo: Nombre del campo
+            tipo_campo: Tipo de dato (texto, número, fecha, etc.)
+            descripcion: Descripción actual del campo
+            razon: Razón por la que se solicita aclaración
+            
+        Returns:
+            str: Pregunta formulada para el usuario
+        """
+        try:
+            prompt = f'''Genera una pregunta ESPECÍFICA y CLARA para solicitar aclaración sobre un campo de reporte.
+
+Campo: {nombre_campo}
+Tipo: {tipo_campo}
+Descripción actual: {descripcion or "Sin descripción"}
+Razón de la duda: {razon}
+
+La pregunta debe:
+- Ser directa y fácil de entender
+- Solicitar información concreta
+- Ayudar a eliminar ambigüedad
+- Ser breve (máximo 2 líneas)
+
+Ejemplo buenos:
+- "¿Qué significa 'estado' en este contexto? ¿Se refiere al estado del proceso, ubicación geográfica, o condición del registro?"
+- "El campo 'valor' ¿representa un monto en pesos, porcentaje, o cantidad de unidades?"
+
+Genera SOLO la pregunta, sin explicaciones adicionales.'''
+
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "Generas preguntas claras y concisas."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=150
+            )
+            
+            pregunta = response.choices[0].message.content.strip()
+            logger.info(f"Pregunta generada para campo {nombre_campo}")
+            
+            return pregunta
+            
+        except Exception as e:
+            logger.error(f"Error generando pregunta: {e}")
+            return f"¿Podrías explicar qué información debe contener el campo '{nombre_campo}'?"
+    
+    def obtener_conocimiento_previo(self, nombre_campo: str, tipo_aprendizaje: str = 'aclaracion_campo') -> Optional[str]:
+        """
+        Busca conocimiento previo en la base de aprendizaje de IA
+        
+        Args:
+            nombre_campo: Nombre del campo a buscar
+            tipo_aprendizaje: Tipo de conocimiento a buscar
+            
+        Returns:
+            str: Respuesta mejorada si existe, None si no hay conocimiento previo
+        """
+        try:
+            conn = self.db_manager.get_connection()
+            cur = conn.cursor()
+            
+            cur.execute('''
+                SELECT respuesta_mejorada, efectividad
+                FROM ia_aprendizaje
+                WHERE tipo_aprendizaje = %s
+                  AND contexto ILIKE %s
+                  AND activo = TRUE
+                ORDER BY efectividad DESC, fecha_creacion DESC
+                LIMIT 1
+            ''', (tipo_aprendizaje, f'%{nombre_campo}%'))
+            
+            row = cur.fetchone()
+            
+            if row:
+                logger.info(f"Conocimiento previo encontrado para {nombre_campo}")
+                return row[0]
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error buscando conocimiento previo: {e}")
+            return None
+        finally:
+            cur.close()
+            conn.close()

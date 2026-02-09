@@ -1279,6 +1279,9 @@ function cambiarTabAnalisis(tab) {
   }
 }
 
+// Variable global para almacenar el último gráfico generado
+let ultimoGraficoGenerado = null;
+
 // Chat con IA
 async function enviarPregunta() {
   if (!reporteSeleccionadoAnalisis) {
@@ -1305,7 +1308,7 @@ async function enviarPregunta() {
   // Mostrar indicador de carga
   const loadingMsg = document.createElement("div");
   loadingMsg.className = "chat-message system loading";
-  loadingMsg.innerHTML = `<strong>🤖 Asistente IA:</strong><p>Pensando...</p>`;
+  loadingMsg.innerHTML = `<strong>🤖 Asistente IA:</strong><p>Analizando datos y generando visualización...</p>`;
   chatMessages.appendChild(loadingMsg);
   chatMessages.scrollTop = chatMessages.scrollHeight;
 
@@ -1315,49 +1318,150 @@ async function enviarPregunta() {
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pregunta }),
+        body: JSON.stringify({
+          pregunta,
+          ultimoGrafico: ultimoGraficoGenerado, // Enviar último gráfico
+        }),
       },
     );
 
     if (!response.ok) throw new Error("Error al procesar pregunta");
 
-    const data = await response.json();
+    // Verificar si es un archivo Excel (Content-Type)
+    const contentType = response.headers.get("content-type");
 
-    // Quitar loading y mostrar respuesta
-    loadingMsg.remove();
+    if (contentType && contentType.includes("spreadsheetml.sheet")) {
+      // Es un archivo Excel - descargarlo
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
 
-    const aiMsg = document.createElement("div");
-    aiMsg.className = "chat-message system";
+      // Obtener nombre del archivo del header Content-Disposition
+      const contentDisposition = response.headers.get("content-disposition");
+      let filename = "Informe.xlsx";
+      if (contentDisposition) {
+        const match = contentDisposition.match(
+          /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/,
+        );
+        if (match && match[1]) {
+          filename = match[1].replace(/['"]/g, "");
+        }
+      }
 
-    const chartId = `chat-chart-${Date.now()}`;
-    let contenido = `
-      <strong>🤖 Asistente IA:</strong>
-      <p style="white-space: pre-wrap;">${data.respuesta}</p>
-    `;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
 
-    // Si hay un gráfico, agregarlo
-    if (data.grafico) {
-      contenido += `
-        <div style="margin-top: 15px; background: white; padding: 15px; border-radius: 8px;">
-          <h4 style="margin-bottom: 10px; font-size: 14px; color: #333;">${data.grafico.titulo}</h4>
-          <canvas id="${chartId}" style="max-height: 300px;"></canvas>
+      // Quitar loading y mostrar confirmación
+      loadingMsg.remove();
+
+      const aiMsg = document.createElement("div");
+      aiMsg.className = "chat-message system";
+      aiMsg.innerHTML = `
+        <strong>🤖 Asistente IA:</strong>
+        <div style="background: #e8f5e9; padding: 15px; border-radius: 8px; border-left: 4px solid #4caf50; margin-top: 10px;">
+          <p style="margin: 0;">✅ <strong>Informe generado exitosamente</strong></p>
+          <p style="margin: 5px 0 0 0; font-size: 0.9em;">
+            📊 El archivo Excel <code>${filename}</code> se ha descargado automáticamente con los gráficos y análisis solicitados.
+          </p>
+          <p style="margin: 10px 0 0 0; font-size: 0.85em; color: #666;">
+            💡 El archivo incluye: Resumen Ejecutivo, Datos Agrupados, Gráficos Nativos y Estadísticas Detalladas
+          </p>
         </div>
       `;
-    }
+      chatMessages.appendChild(aiMsg);
 
-    contenido += `<small style="color: #999;">Contexto usado: ${data.contexto_usado} registros relevantes</small>`;
+      mostrarAlerta("Excel descargado correctamente", "success");
+    } else {
+      // Es una respuesta JSON normal
+      const data = await response.json();
 
-    aiMsg.innerHTML = contenido;
-    chatMessages.appendChild(aiMsg);
+      // Quitar loading y mostrar respuesta
+      loadingMsg.remove();
 
-    // Renderizar gráfico si existe
-    if (data.grafico) {
-      setTimeout(() => {
-        const canvas = document.getElementById(chartId);
-        if (canvas) {
-          renderizarGraficoChat(canvas, data.grafico);
-        }
-      }, 100);
+      const aiMsg = document.createElement("div");
+      aiMsg.className = "chat-message system";
+
+      const chartId = `chat-chart-${Date.now()}`;
+      const messageId = `msg-${Date.now()}`;
+
+      let contenido = `
+        <strong>🤖 Asistente IA:</strong>
+        <div id="${messageId}" style="position: relative;">
+          <p style="white-space: pre-wrap;">${data.respuesta}</p>
+          
+          <!-- Botones de acción para texto -->
+          <div style="margin-top: 10px; display: flex; gap: 8px; flex-wrap: wrap;">
+            <button onclick="copiarTextoRespuesta('${messageId}')" 
+                    style="padding: 6px 12px; background: #4285F4; color: white; border: none; 
+                           border-radius: 4px; cursor: pointer; font-size: 12px; display: flex; 
+                           align-items: center; gap: 4px;">
+              📋 Copiar texto
+            </button>
+          </div>
+        </div>
+      `;
+
+      // Si hay un gráfico, agregarlo
+      if (data.grafico) {
+        contenido += `
+          <div style="margin-top: 15px; background: white; padding: 15px; border-radius: 8px; position: relative;">
+            <h4 style="margin-bottom: 10px; font-size: 14px; color: #333;">${data.grafico.titulo}</h4>
+            <canvas id="${chartId}" style="max-height: 300px;"></canvas>
+            
+            <!-- Botones de acción para gráfico -->
+            <div style="margin-top: 15px; display: flex; gap: 8px; flex-wrap: wrap; 
+                        padding-top: 10px; border-top: 1px solid #e0e0e0;">
+              <button onclick="copiarImagenGrafico('${chartId}')" 
+                      style="padding: 8px 16px; background: #34A853; color: white; border: none; 
+                             border-radius: 4px; cursor: pointer; font-size: 13px; display: flex; 
+                             align-items: center; gap: 6px; font-weight: 500;">
+                📸 Copiar imagen
+              </button>
+              <button onclick="exportarGraficoAExcel()" 
+                      style="padding: 8px 16px; background: #1e7e34; color: white; border: none; 
+                             border-radius: 4px; cursor: pointer; font-size: 13px; display: flex; 
+                             align-items: center; gap: 6px; font-weight: 500;">
+                📊 Exportar a Excel
+              </button>
+              <button onclick="descargarImagenGrafico('${chartId}', '${data.grafico.titulo}')" 
+                      style="padding: 8px 16px; background: #FF9800; color: white; border: none; 
+                             border-radius: 4px; cursor: pointer; font-size: 13px; display: flex; 
+                             align-items: center; gap: 6px; font-weight: 500;">
+                💾 Descargar PNG
+              </button>
+            </div>
+          </div>
+        `;
+      }
+
+      if (data.contexto_usado) {
+        contenido += `<small style="color: #999; display: block; margin-top: 8px;">Contexto usado: ${data.contexto_usado} registros relevantes</small>`;
+      }
+
+      aiMsg.innerHTML = contenido;
+      chatMessages.appendChild(aiMsg);
+
+      // Renderizar gráfico si existe
+      if (data.grafico) {
+        // Guardar el último gráfico generado
+        ultimoGraficoGenerado = {
+          grafico: data.grafico,
+          pregunta: pregunta,
+          reporte: reporteSeleccionadoAnalisis,
+        };
+        console.log("Último gráfico guardado:", ultimoGraficoGenerado);
+
+        setTimeout(() => {
+          const canvas = document.getElementById(chartId);
+          if (canvas) {
+            renderizarGraficoChat(canvas, data.grafico);
+          }
+        }, 100);
+      }
     }
 
     chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -1374,49 +1478,127 @@ async function enviarPregunta() {
 
 // Renderizar gráfico en el chat
 function renderizarGraficoChat(canvas, grafico) {
-  const colores = generarColores(grafico.datos.length);
+  console.log("Renderizando gráfico:", grafico);
+
+  // Configurar canvas con alta resolución
+  const dpi = window.devicePixelRatio || 2;
+  const style_height = +getComputedStyle(canvas)
+    .getPropertyValue("height")
+    .slice(0, -2);
+  const style_width = +getComputedStyle(canvas)
+    .getPropertyValue("width")
+    .slice(0, -2);
+
+  canvas.setAttribute("height", style_height * dpi);
+  canvas.setAttribute("width", style_width * dpi);
+
+  // Generar colores para cada barra
+  const coloresBase = [
+    "rgba(66, 133, 244, 0.8)", // Azul
+    "rgba(52, 168, 83, 0.8)", // Verde
+    "rgba(251, 188, 4, 0.8)", // Amarillo
+    "rgba(234, 67, 53, 0.8)", // Rojo
+    "rgba(156, 39, 176, 0.8)", // Morado
+    "rgba(0, 188, 212, 0.8)", // Cyan
+    "rgba(255, 152, 0, 0.8)", // Naranja
+    "rgba(121, 85, 72, 0.8)", // Café
+  ];
+
+  const coloresBorde = [
+    "rgba(66, 133, 244, 1)",
+    "rgba(52, 168, 83, 1)",
+    "rgba(251, 188, 4, 1)",
+    "rgba(234, 67, 53, 1)",
+    "rgba(156, 39, 176, 1)",
+    "rgba(0, 188, 212, 1)",
+    "rgba(255, 152, 0, 1)",
+    "rgba(121, 85, 72, 1)",
+  ];
 
   const config = {
-    type: grafico.tipo,
+    type: grafico.tipo || "bar",
     data: {
-      labels: grafico.labels,
+      labels: grafico.labels || [],
       datasets: [
         {
-          label: grafico.columna,
-          data: grafico.datos,
-          backgroundColor: colores.background,
-          borderColor: colores.border,
-          borderWidth: 1,
+          label: grafico.columna || "Valor",
+          data: grafico.datos || [],
+          backgroundColor: coloresBase.slice(0, grafico.datos.length),
+          borderColor: coloresBorde.slice(0, grafico.datos.length),
+          borderWidth: 2,
         },
       ],
     },
     options: {
       responsive: true,
       maintainAspectRatio: true,
+      devicePixelRatio: dpi,
+      animation: {
+        duration: 750,
+        easing: "easeInOutQuart",
+      },
       plugins: {
         legend: {
           display: grafico.tipo === "pie",
           position: "bottom",
+          labels: {
+            font: {
+              size: 12,
+              family: "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
+            },
+            padding: 15,
+            generateLabels: function (chart) {
+              const data = chart.data;
+              if (data.labels.length && data.datasets.length) {
+                return data.labels.map((label, i) => {
+                  const value = data.datasets[0].data[i];
+                  const total = data.datasets[0].data.reduce(
+                    (a, b) => a + b,
+                    0,
+                  );
+                  const percent = ((value / total) * 100).toFixed(1);
+                  return {
+                    text: `${label} (${percent}%)`,
+                    fillStyle: data.datasets[0].backgroundColor[i],
+                    hidden: false,
+                    index: i,
+                  };
+                });
+              }
+              return [];
+            },
+          },
         },
         tooltip: {
+          backgroundColor: "rgba(0, 0, 0, 0.8)",
+          padding: 12,
+          titleFont: {
+            size: 14,
+            weight: "bold",
+          },
+          bodyFont: {
+            size: 13,
+          },
           callbacks: {
             label: function (context) {
               let label = context.label || "";
               if (label) {
                 label += ": ";
               }
+
               if (grafico.tipo === "pie") {
+                const value = context.parsed;
                 const total = context.dataset.data.reduce((a, b) => a + b, 0);
-                const percent = ((context.parsed / total) * 100).toFixed(1);
-                label +=
-                  context.parsed.toLocaleString() + " (" + percent + "%)";
+                const percent = ((value / total) * 100).toFixed(1);
+                label += "$" + value.toLocaleString("es-CO") + ` (${percent}%)`;
               } else {
-                label += (
+                const value =
                   context.parsed.y !== undefined
                     ? context.parsed.y
-                    : context.parsed
-                ).toLocaleString();
+                    : context.parsed;
+                label += "$" + value.toLocaleString("es-CO");
               }
+
               return label;
             },
           },
@@ -1428,9 +1610,25 @@ function renderizarGraficoChat(canvas, grafico) {
               y: {
                 beginAtZero: true,
                 ticks: {
-                  callback: function (value) {
-                    return value.toLocaleString();
+                  font: {
+                    size: 11,
                   },
+                  callback: function (value) {
+                    return "$" + value.toLocaleString("es-CO");
+                  },
+                },
+                grid: {
+                  color: "rgba(0, 0, 0, 0.05)",
+                },
+              },
+              x: {
+                ticks: {
+                  font: {
+                    size: 11,
+                  },
+                },
+                grid: {
+                  display: false,
                 },
               },
             }
@@ -1438,7 +1636,206 @@ function renderizarGraficoChat(canvas, grafico) {
     },
   };
 
+  console.log("Config de Chart.js:", config);
   new Chart(canvas, config);
+}
+
+// Funciones para botones de acción en el chat
+
+function copiarTextoRespuesta(messageId) {
+  const messageDiv = document.getElementById(messageId);
+  if (!messageDiv) return;
+
+  // Obtener solo el texto del párrafo, sin los botones
+  const textoElement = messageDiv.querySelector("p");
+  const texto = textoElement
+    ? textoElement.textContent
+    : messageDiv.textContent;
+
+  navigator.clipboard
+    .writeText(texto)
+    .then(() => {
+      mostrarAlerta("✅ Texto copiado al portapapeles", "success");
+    })
+    .catch((err) => {
+      console.error("Error al copiar:", err);
+      mostrarAlerta("❌ No se pudo copiar el texto", "error");
+    });
+}
+
+function copiarImagenGrafico(chartId) {
+  const canvas = document.getElementById(chartId);
+  if (!canvas) {
+    mostrarAlerta("❌ Gráfico no encontrado", "error");
+    return;
+  }
+
+  // Crear un canvas temporal con mejor calidad y fondo blanco
+  const tempCanvas = document.createElement("canvas");
+  const scale = 2; // 2x resolución para mejor calidad
+  tempCanvas.width = canvas.width * scale;
+  tempCanvas.height = canvas.height * scale;
+
+  const ctx = tempCanvas.getContext("2d");
+
+  // Fondo blanco
+  ctx.fillStyle = "white";
+  ctx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+
+  // Escalar y dibujar el gráfico original
+  ctx.scale(scale, scale);
+  ctx.drawImage(canvas, 0, 0);
+
+  tempCanvas.toBlob(
+    (blob) => {
+      const item = new ClipboardItem({ "image/png": blob });
+      navigator.clipboard
+        .write([item])
+        .then(() => {
+          mostrarAlerta(
+            "✅ Imagen del gráfico copiada al portapapeles",
+            "success",
+          );
+        })
+        .catch((err) => {
+          console.error("Error al copiar imagen:", err);
+          mostrarAlerta("❌ No se pudo copiar la imagen", "error");
+        });
+    },
+    "image/png",
+    1.0,
+  );
+}
+
+async function exportarGraficoAExcel() {
+  if (!ultimoGraficoGenerado) {
+    mostrarAlerta("⚠️ No hay ningún gráfico para exportar", "warning");
+    return;
+  }
+
+  const chatMessages = document.getElementById("chat-messages");
+
+  // Mostrar indicador de carga
+  const loadingMsg = document.createElement("div");
+  loadingMsg.className = "chat-message system loading";
+  loadingMsg.innerHTML = `<strong>🤖 Asistente IA:</strong><p>Generando archivo Excel...</p>`;
+  chatMessages.appendChild(loadingMsg);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+
+  try {
+    const response = await fetch(
+      `/api/analysis/${encodeURIComponent(reporteSeleccionadoAnalisis)}/pregunta`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pregunta: "exporta a excel",
+          ultimoGrafico: ultimoGraficoGenerado,
+        }),
+      },
+    );
+
+    if (!response.ok) throw new Error("Error al generar Excel");
+
+    const contentType = response.headers.get("content-type");
+
+    if (contentType && contentType.includes("spreadsheetml.sheet")) {
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+
+      const contentDisposition = response.headers.get("content-disposition");
+      let filename = "Informe.xlsx";
+      if (contentDisposition) {
+        const match = contentDisposition.match(
+          /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/,
+        );
+        if (match && match[1]) {
+          filename = match[1].replace(/['"]/g, "");
+        }
+      }
+
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+
+      loadingMsg.remove();
+
+      const successMsg = document.createElement("div");
+      successMsg.className = "chat-message system";
+      successMsg.innerHTML = `
+        <strong>🤖 Asistente IA:</strong>
+        <div style="background: #e8f5e9; padding: 12px; border-radius: 8px; border-left: 4px solid #4caf50; margin-top: 10px;">
+          <p style="margin: 0;">✅ Archivo Excel <code>${filename}</code> descargado correctamente</p>
+        </div>
+      `;
+      chatMessages.appendChild(successMsg);
+
+      mostrarAlerta("Excel descargado correctamente", "success");
+    } else {
+      throw new Error("No se recibió un archivo Excel");
+    }
+
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  } catch (error) {
+    console.error("Error:", error);
+    loadingMsg.remove();
+    mostrarAlerta("❌ Error al exportar a Excel: " + error.message, "error");
+  }
+}
+
+function descargarImagenGrafico(chartId, titulo) {
+  const canvas = document.getElementById(chartId);
+  if (!canvas) {
+    mostrarAlerta("❌ Gráfico no encontrado", "error");
+    return;
+  }
+
+  // Crear canvas de alta resolución con fondo blanco y padding
+  const scale = 3; // 3x para mejor calidad
+  const padding = 40; // Padding alrededor del gráfico
+
+  const tempCanvas = document.createElement("canvas");
+  tempCanvas.width = (canvas.width + padding * 2) * scale;
+  tempCanvas.height = (canvas.height + padding * 2) * scale;
+
+  const ctx = tempCanvas.getContext("2d");
+
+  // Fondo blanco
+  ctx.fillStyle = "white";
+  ctx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+
+  // Escalar
+  ctx.scale(scale, scale);
+
+  // Dibujar el gráfico con padding
+  ctx.drawImage(canvas, padding, padding);
+
+  // Convertir a blob de alta calidad
+  tempCanvas.toBlob(
+    (blob) => {
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+
+      // Limpiar el título para nombre de archivo
+      const nombreArchivo = titulo.replace(/[^a-z0-9]/gi, "_").toLowerCase();
+      const timestamp = new Date().toISOString().slice(0, 10);
+      a.download = `grafico_${nombreArchivo}_${timestamp}.png`;
+
+      document.body.appendChild(a);
+      a.click();
+      window.URL.revokeObjectURL(url);
+      document.body.removeChild(a);
+
+      mostrarAlerta("✅ Imagen descargada en alta calidad", "success");
+    },
+    "image/png",
+    1.0,
+  );
 }
 
 // Indexar datos
@@ -1761,3 +2158,417 @@ function copiarInforme() {
     mostrarAlerta("Informe copiado al portapapeles", "success");
   });
 }
+
+// ========================================================
+// SISTEMA DE ACLARACIONES Y VALIDACIONES IA
+// ========================================================
+
+// Cargar notificaciones de aclaraciones
+async function cargarNotificacionesAclaraciones() {
+  try {
+    const response = await fetch("/api/admin/notificaciones");
+    const data = await response.json();
+
+    if (data.success) {
+      const badge = document.getElementById("badge-aclaraciones");
+      const total = data.total || 0;
+
+      if (total > 0) {
+        badge.textContent = total;
+        badge.style.display = "inline-block";
+      } else {
+        badge.style.display = "none";
+      }
+    }
+  } catch (error) {
+    console.error("Error cargando notificaciones:", error);
+  }
+}
+
+// Cambiar tabs de aclaraciones
+function cambiarTabAclaraciones(tab) {
+  // Cambiar clase activa de tabs
+  document
+    .querySelectorAll(".tabs .tab-btn")
+    .forEach((btn) => btn.classList.remove("active"));
+  event.target.classList.add("active");
+
+  // Mostrar tab correspondiente
+  document
+    .querySelectorAll('[id^="tab-aclaraciones-"]')
+    .forEach((div) => div.classList.remove("active"));
+  document.getElementById(`tab-aclaraciones-${tab}`).classList.add("active");
+
+  // Cargar datos del tab
+  if (tab === "pendientes") {
+    cargarAclaracionesPendientes();
+  } else if (tab === "validacion") {
+    cargarAclaracionesValidacion();
+  } else if (tab === "aprobadas") {
+    cargarBaseConocimiento();
+  }
+}
+
+// Cargar todas las aclaraciones
+async function cargarAclaraciones() {
+  await Promise.all([
+    cargarAclaracionesPendientes(),
+    cargarAclaracionesValidacion(),
+    cargarBaseConocimiento(),
+    actualizarEstadisticasAclaraciones(),
+  ]);
+}
+
+// Cargar aclaraciones pendientes de respuesta
+async function cargarAclaracionesPendientes() {
+  try {
+    const response = await fetch("/api/admin/aclaraciones/pendientes");
+    const data = await response.json();
+
+    if (!data.success) {
+      throw new Error(data.error || "Error cargando aclaraciones");
+    }
+
+    const container = document.getElementById("lista-aclaraciones-pendientes");
+
+    // Filtrar solo pendientes de usuario
+    const pendientes = data.aclaraciones.filter(
+      (a) => a.estado === "pendiente",
+    );
+
+    if (pendientes.length === 0) {
+      container.innerHTML =
+        '<p style="text-align: center; color: #666;">✅ No hay aclaraciones pendientes de respuesta</p>';
+      return;
+    }
+
+    let html = "";
+    pendientes.forEach((acl) => {
+      const fechaPregunta = new Date(acl.fecha_pregunta).toLocaleString(
+        "es-ES",
+      );
+
+      html += `
+        <div class="aclaracion-card pendiente">
+          <div class="aclaracion-header">
+            <div>
+              <h3>🏷️ ${acl.nombre_campo}</h3>
+              <p class="aclaracion-meta">Reporte: <strong>${acl.reporte_codigo}</strong> • ${fechaPregunta}</p>
+            </div>
+            <span class="estado-badge pendiente">⏳ Pendiente</span>
+          </div>
+          
+          <div class="aclaracion-body">
+            <div class="aclaracion-pregunta">
+              <strong>❓ Pregunta de la IA:</strong>
+              <p>${acl.pregunta_ia}</p>
+            </div>
+          </div>
+          
+          <div class="aclaracion-footer">
+            <p style="font-size: 0.9em; color: #666;">Esperando respuesta del usuario</p>
+          </div>
+        </div>
+      `;
+    });
+
+    container.innerHTML = html;
+  } catch (error) {
+    console.error("Error:", error);
+    document.getElementById("lista-aclaraciones-pendientes").innerHTML =
+      `<p style="color: red;">Error: ${error.message}</p>`;
+  }
+}
+
+// Cargar aclaraciones que requieren validación admin
+async function cargarAclaracionesValidacion() {
+  try {
+    const response = await fetch("/api/admin/aclaraciones/pendientes");
+    const data = await response.json();
+
+    if (!data.success) {
+      throw new Error(data.error || "Error cargando aclaraciones");
+    }
+
+    const container = document.getElementById("lista-aclaraciones-validacion");
+
+    // Filtrar solo respondidas por usuario
+    const respondidas = data.aclaraciones.filter(
+      (a) => a.estado === "respondida_usuario",
+    );
+
+    if (respondidas.length === 0) {
+      container.innerHTML =
+        '<p style="text-align: center; color: #666;">✅ No hay aclaraciones pendientes de validación</p>';
+      return;
+    }
+
+    let html = "";
+    respondidas.forEach((acl) => {
+      const fechaRespuesta = new Date(
+        acl.fecha_respuesta_usuario,
+      ).toLocaleString("es-ES");
+
+      html += `
+        <div class="aclaracion-card respondida">
+          <div class="aclaracion-header">
+            <div>
+              <h3>🏷️ ${acl.nombre_campo}</h3>
+              <p class="aclaracion-meta">Reporte: <strong>${acl.reporte_codigo}</strong></p>
+            </div>
+            <span class="estado-badge respondida">⏳ Requiere Validación</span>
+          </div>
+          
+          <div class="aclaracion-body">
+            <div class="aclaracion-pregunta">
+              <strong>❓ Pregunta de la IA:</strong>
+              <p>${acl.pregunta_ia}</p>
+            </div>
+            
+            <div class="aclaracion-respuesta">
+              <strong>💬 Respuesta del Usuario:</strong>
+              <p>${acl.respuesta_usuario || "Sin respuesta"}</p>
+              <p style="font-size: 0.9em; color: #666; margin-top: 8px;">
+                Por: ${acl.usuario_respondio || "Desconocido"} • ${fechaRespuesta}
+              </p>
+            </div>
+          </div>
+          
+          <div class="aclaracion-footer">
+            <button class="btn btn-success" onclick="abrirModalValidarAclaracion(${acl.id})">
+              ✅ Validar
+            </button>
+          </div>
+        </div>
+      `;
+    });
+
+    container.innerHTML = html;
+  } catch (error) {
+    console.error("Error:", error);
+    document.getElementById("lista-aclaraciones-validacion").innerHTML =
+      `<p style="color: red;">Error: ${error.message}</p>`;
+  }
+}
+
+// Cargar base de conocimiento
+async function cargarBaseConocimiento() {
+  try {
+    const response = await fetch("/api/admin/aclaraciones/pendientes");
+    const data = await response.json();
+
+    if (!data.success) {
+      throw new Error(data.error || "Error cargando base de conocimiento");
+    }
+
+    const container = document.getElementById("lista-base-conocimiento");
+
+    // Filtrar solo aprobadas
+    const aprobadas = data.aclaraciones.filter((a) => a.aprobado);
+
+    if (aprobadas.length === 0) {
+      container.innerHTML =
+        '<p style="text-align: center; color: #666;">📚 Aún no hay aclaraciones aprobadas en la base de conocimiento</p>';
+      return;
+    }
+
+    let html = "";
+    aprobadas.forEach((acl) => {
+      const fechaAprobacion = new Date(acl.fecha_aprobacion).toLocaleString(
+        "es-ES",
+      );
+
+      html += `
+        <div class="aclaracion-card aprobada">
+          <div class="aclaracion-header">
+            <div>
+              <h3>🏷️ ${acl.nombre_campo}</h3>
+              <p class="aclaracion-meta">Reporte: <strong>${acl.reporte_codigo}</strong></p>
+            </div>
+            <span class="estado-badge aprobada">✅ Aprobada</span>
+          </div>
+          
+          <div class="aclaracion-body">
+            <div class="aclaracion-pregunta">
+              <strong>❓ Pregunta:</strong>
+              <p>${acl.pregunta_ia}</p>
+            </div>
+            
+            <div class="aclaracion-respuesta" style="background: #d4edda; border-left-color: #28a745;">
+              <strong>✅ Respuesta Aprobada:</strong>
+              <p>${acl.respuesta_admin || acl.respuesta_usuario}</p>
+              <p style="font-size: 0.9em; color: #666; margin-top: 8px;">
+                Aprobado por: ${acl.admin_respondio || "Admin"} • ${fechaAprobacion}
+              </p>
+            </div>
+          </div>
+        </div>
+      `;
+    });
+
+    container.innerHTML = html;
+  } catch (error) {
+    console.error("Error:", error);
+    document.getElementById("lista-base-conocimiento").innerHTML =
+      `<p style="color: red;">Error: ${error.message}</p>`;
+  }
+}
+
+// Actualizar estadísticas de aclaraciones
+async function actualizarEstadisticasAclaraciones() {
+  try {
+    const response = await fetch("/api/admin/aclaraciones/pendientes");
+    const data = await response.json();
+
+    if (data.success) {
+      const aclaraciones = data.aclaraciones || [];
+
+      const pendientes = aclaraciones.filter(
+        (a) => a.estado === "pendiente",
+      ).length;
+      const respondidas = aclaraciones.filter(
+        (a) => a.estado === "respondida_usuario",
+      ).length;
+
+      // Aprobadas hoy
+      const hoy = new Date().toDateString();
+      const aprobadasHoy = aclaraciones.filter((a) => {
+        if (!a.fecha_aprobacion) return false;
+        return new Date(a.fecha_aprobacion).toDateString() === hoy;
+      }).length;
+
+      document.getElementById("stat-aclaraciones-pendientes").textContent =
+        pendientes;
+      document.getElementById("stat-aclaraciones-validacion").textContent =
+        respondidas;
+      document.getElementById("stat-aclaraciones-aprobadas").textContent =
+        aprobadasHoy;
+    }
+  } catch (error) {
+    console.error("Error actualizando estadísticas:", error);
+  }
+}
+
+// Abrir modal para validar aclaración
+async function abrirModalValidarAclaracion(aclaracionId) {
+  try {
+    // Obtener detalles de la aclaración
+    const response = await fetch("/api/admin/aclaraciones/pendientes");
+    const data = await response.json();
+
+    if (!data.success) {
+      throw new Error("Error cargando aclaración");
+    }
+
+    const acl = data.aclaraciones.find((a) => a.id === aclaracionId);
+    if (!acl) {
+      throw new Error("Aclaración no encontrada");
+    }
+
+    // Llenar el formulario
+    document.getElementById("validar-aclaracion-id").value = acl.id;
+    document.getElementById("validar-reporte-codigo").textContent =
+      acl.reporte_codigo;
+    document.getElementById("validar-nombre-campo").textContent =
+      acl.nombre_campo;
+    document.getElementById("validar-pregunta-ia").textContent =
+      acl.pregunta_ia;
+    document.getElementById("validar-respuesta-usuario").textContent =
+      acl.respuesta_usuario || "Sin respuesta";
+    document.getElementById("validar-usuario").textContent =
+      acl.usuario_respondio || "Desconocido";
+    document.getElementById("validar-fecha").textContent = new Date(
+      acl.fecha_respuesta_usuario,
+    ).toLocaleString("es-ES");
+
+    // Prellenar con la respuesta del usuario
+    document.getElementById("validar-respuesta-final").value =
+      acl.respuesta_usuario || "";
+    document.getElementById("validar-aprobar").checked = true;
+
+    // Mostrar modal
+    document.getElementById("modal-validar-aclaracion").classList.add("active");
+  } catch (error) {
+    console.error("Error:", error);
+    mostrarAlerta(error.message, "error");
+  }
+}
+
+// Cerrar modal de validación
+function cerrarModalValidarAclaracion() {
+  document
+    .getElementById("modal-validar-aclaracion")
+    .classList.remove("active");
+  document.getElementById("form-validar-aclaracion").reset();
+}
+
+// Validar aclaración (submit form)
+async function validarAclaracion(event) {
+  event.preventDefault();
+
+  const aclaracionId = document.getElementById("validar-aclaracion-id").value;
+  const respuestaFinal = document.getElementById(
+    "validar-respuesta-final",
+  ).value;
+  const aprobar = document.getElementById("validar-aprobar").checked;
+
+  try {
+    const response = await fetch(
+      `/api/admin/aclaraciones/${aclaracionId}/validar`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          respuesta_final: respuestaFinal,
+          aprobar: aprobar,
+          admin: "admin", // TODO: Obtener del usuario autenticado
+        }),
+      },
+    );
+
+    const data = await response.json();
+
+    if (!data.success) {
+      throw new Error(data.error || "Error validando aclaración");
+    }
+
+    mostrarAlerta(
+      data.message || "Aclaración validada correctamente",
+      "success",
+    );
+    cerrarModalValidarAclaracion();
+
+    // Recargar aclaraciones
+    await cargarAclaraciones();
+    await cargarNotificacionesAclaraciones();
+  } catch (error) {
+    console.error("Error:", error);
+    mostrarAlerta(error.message, "error");
+  }
+}
+
+// Inicializar sistema de aclaraciones al cargar la página
+document.addEventListener("DOMContentLoaded", function () {
+  // Cargar notificaciones cada 30 segundos
+  if (typeof cargarNotificacionesAclaraciones === "function") {
+    cargarNotificacionesAclaraciones();
+    setInterval(cargarNotificacionesAclaraciones, 30000);
+  }
+
+  // Cargar aclaraciones si estamos en esa sección
+  const aclaracionesSection = document.getElementById("aclaraciones-section");
+  if (aclaracionesSection) {
+    const observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        if (mutation.target.classList.contains("active")) {
+          cargarAclaraciones();
+        }
+      });
+    });
+
+    observer.observe(aclaracionesSection, {
+      attributes: true,
+      attributeFilter: ["class"],
+    });
+  }
+});

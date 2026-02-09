@@ -13,6 +13,7 @@ import base64
 from db_manager import DatabaseManager
 from models import ReporteConfig, CampoConfig, RelacionConfig
 from analysis_agent import DataAnalysisAgent
+from aclaraciones_manager import AclaracionesManager
 
 load_dotenv()
 
@@ -47,6 +48,9 @@ db_manager = DatabaseManager(DB_CONFIG)
 
 # Inicializar agente de análisis
 analysis_agent = DataAnalysisAgent(db_manager, openai_api_key=os.getenv('OPENAI_API_KEY'))
+
+# Inicializar gestor de aclaraciones
+aclaraciones_manager = AclaracionesManager(db_manager)
 
 # ============================================
 # RUTAS PÚBLICAS
@@ -93,7 +97,7 @@ def listar_reportes():
 
 @app.route('/api/admin/reportes', methods=['POST'])
 def crear_reporte():
-    """Crear nuevo reporte"""
+    """Crear nuevo reporte con validación IA"""
     try:
         datos = request.json
         
@@ -101,17 +105,65 @@ def crear_reporte():
         if not datos.get('nombre') or not datos.get('codigo'):
             return jsonify({'error': 'Nombre y código son obligatorios'}), 400
         
+        # Validar con IA si está habilitado
+        validacion_ia = None
+        if datos.get('campos') and os.getenv('ENABLE_IA_VALIDATION', 'true').lower() == 'true':
+            try:
+                validacion_ia = analysis_agent.validar_reporte_con_ia(datos['campos'])
+                
+                # Guardar resultado de validación
+                aclaraciones_manager.guardar_validacion_reporte(
+                    datos['codigo'],
+                    validacion_ia
+                )
+                
+                # Si hay campos dudosos, crear aclaraciones
+                if validacion_ia.get('campos_dudosos'):
+                    for campo_dudoso in validacion_ia['campos_dudosos']:
+                        if campo_dudoso.get('severidad') in ['alta', 'media']:
+                            # Generar pregunta de aclaración
+                            pregunta = analysis_agent.generar_pregunta_aclaracion(
+                                campo_dudoso['nombre'],
+                                next((c['tipo'] for c in datos['campos'] if c['nombre'] == campo_dudoso['nombre']), 'texto'),
+                                next((c.get('descripcion', '') for c in datos['campos'] if c['nombre'] == campo_dudoso['nombre']), ''),
+                                campo_dudoso['razon']
+                            )
+                            
+                            # Crear registro de aclaración
+                            aclaraciones_manager.crear_aclaracion(
+                                datos['codigo'],
+                                campo_dudoso['nombre'],
+                                pregunta,
+                                json.dumps(campo_dudoso)
+                            )
+                
+                logger.info(f"Validación IA completada para {datos['codigo']}: {validacion_ia.get('puntuacion_claridad', 0)}/100")
+                
+            except Exception as e:
+                logger.error(f"Error en validación IA (continuando sin validación): {e}")
+                validacion_ia = None
+        
         # Crear configuración
         reporte = ReporteConfig(datos)
         
         # Guardar en BD
         reporte_id = db_manager.crear_reporte(reporte)
         
-        return jsonify({
+        respuesta = {
             'success': True,
             'reporte_id': reporte_id,
             'message': f"Reporte '{datos['nombre']}' creado correctamente"
-        }), 201
+        }
+        
+        # Agregar información de validación si existe
+        if validacion_ia:
+            respuesta['validacion_ia'] = {
+                'puntuacion': validacion_ia.get('puntuacion_claridad', 0),
+                'campos_con_dudas': len(validacion_ia.get('campos_dudosos', [])),
+                'requiere_aclaraciones': len(validacion_ia.get('campos_dudosos', [])) > 0
+            }
+        
+        return jsonify(respuesta), 201
         
     except Exception as e:
         logger.error(f"Error creando reporte: {e}")
@@ -164,7 +216,132 @@ def eliminar_reporte(codigo):
         logger.error(f"Error eliminando reporte: {e}")
         return jsonify({'error': str(e)}), 500
 
+# ============================================
+# API - SISTEMA DE ACLARACIONES Y VALIDACIONES IA
+# ============================================
+
+@app.route('/api/aclaraciones/<reporte_codigo>', methods=['GET'])
+def obtener_aclaraciones(reporte_codigo):
+    """Obtener aclaraciones pendientes para un reporte"""
+    try:
+        aclaraciones = aclaraciones_manager.obtener_aclaraciones_pendientes(reporte_codigo)
+        return jsonify({
+            'success': True,
+            'aclaraciones': aclaraciones,
+            'total': len(aclaraciones)
+        }), 200
+    except Exception as e:
+        logger.error(f"Error obteniendo aclaraciones: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/aclaraciones/<int:aclaracion_id>/responder', methods=['POST'])
+def responder_aclaracion(aclaracion_id):
+    """Usuario responde una aclaración"""
+    try:
+        datos = request.json
+        
+        if not datos.get('respuesta'):
+            return jsonify({'error': 'Se requiere una respuesta'}), 400
+        
+        usuario = datos.get('usuario', 'usuario_anonimo')
+        
+        success = aclaraciones_manager.responder_aclaracion_usuario(
+            aclaracion_id,
+            datos['respuesta'],
+            usuario
+        )
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': 'Respuesta guardada. Un administrador la revisará.'
+            }), 200
+        else:
+            return jsonify({'error': 'Aclaración no encontrada'}), 404
+            
+    except Exception as e:
+        logger.error(f"Error respondiendo aclaración: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/aclaraciones/<int:aclaracion_id>/validar', methods=['POST'])
+def validar_aclaracion_admin(aclaracion_id):
+    """Admin valida y aprueba/mejora respuesta de usuario"""
+    try:
+        datos = request.json
+        
+        if not datos.get('respuesta_final'):
+            return jsonify({'error': 'Se requiere respuesta final'}), 400
+        
+        admin = datos.get('admin', 'admin')
+        aprobar = datos.get('aprobar', True)
+        
+        success = aclaraciones_manager.validar_aclaracion_admin(
+            aclaracion_id,
+            datos['respuesta_final'],
+            admin,
+            aprobar
+        )
+        
+        if success:
+            return jsonify({
+                'success': True,
+                'message': 'Aclaración validada y guardada en base de conocimiento'
+            }), 200
+        else:
+            return jsonify({'error': 'Aclaración no encontrada'}), 404
+            
+    except Exception as e:
+        logger.error(f"Error validando aclaración: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/notificaciones', methods=['GET'])
+def obtener_notificaciones():
+    """Obtener notificaciones no leídas para admin"""
+    try:
+        admin = request.args.get('admin', None)
+        notificaciones = aclaraciones_manager.obtener_notificaciones_no_leidas(admin)
+        
+        return jsonify({
+            'success': True,
+            'notificaciones': notificaciones,
+            'total': len(notificaciones)
+        }), 200
+    except Exception as e:
+        logger.error(f"Error obteniendo notificaciones: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/notificaciones/<int:notificacion_id>/marcar-leida', methods=['POST'])
+def marcar_notificacion_leida(notificacion_id):
+    """Marcar notificación como leída"""
+    try:
+        success = aclaraciones_manager.marcar_notificacion_leida(notificacion_id)
+        
+        if success:
+            return jsonify({'success': True}), 200
+        else:
+            return jsonify({'error': 'Notificación no encontrada'}), 404
+            
+    except Exception as e:
+        logger.error(f"Error marcando notificación: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/aclaraciones/pendientes', methods=['GET'])
+def listar_aclaraciones_pendientes():
+    """Listar todas las aclaraciones pendientes de validación admin"""
+    try:
+        aclaraciones = aclaraciones_manager.obtener_aclaraciones_pendientes()
+        
+        return jsonify({
+            'success': True,
+            'aclaraciones': aclaraciones,
+            'total': len(aclaraciones)
+        }), 200
+    except Exception as e:
+        logger.error(f"Error listando aclaraciones: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/admin/analizar-excel', methods=['POST'])
+
 def analizar_excel():
     """Analizar archivo Excel y extraer estructura de campos"""
     try:
@@ -898,12 +1075,92 @@ def hacer_pregunta(codigo):
     try:
         data = request.get_json()
         pregunta = data.get('pregunta')
+        ultimo_grafico = data.get('ultimoGrafico')  # Recibir último gráfico del frontend
         
         if not pregunta:
             return jsonify({'error': 'Se requiere una pregunta'}), 400
         
-        resultado = analysis_agent.responder_pregunta(codigo, pregunta)
-        return jsonify(resultado), 200
+        pregunta_lower = pregunta.lower()
+        
+        # Detectar si se pide DESCARGAR EL GRÁFICO como imagen/PDF
+        palabras_descarga_grafico = ['descarga el gráfico', 'descarga gráfico', 'descarga el grafico', 'descarga grafico',
+                                       'descargar gráfico', 'descargar grafico', 'exporta el gráfico', 'exporta el grafico']
+        
+        solicita_imagen_grafico = any(frase in pregunta_lower for frase in palabras_descarga_grafico)
+        
+        if solicita_imagen_grafico and ultimo_grafico:
+            # Generar imagen PNG del gráfico
+            logger.info(f"Generando imagen del gráfico: {ultimo_grafico.get('grafico', {}).get('titulo')}")
+            try:
+                img_buffer = _generar_imagen_grafico(ultimo_grafico['grafico'])
+                img_buffer.seek(0)
+                
+                return send_file(
+                    img_buffer,
+                    mimetype='image/png',
+                    as_attachment=True,
+                    download_name=f'Grafico_{codigo}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.png'
+                )
+            except Exception as e:
+                logger.error(f"Error generando imagen: {e}")
+                return jsonify({
+                    'pregunta': pregunta,
+                    'respuesta': f"⚠️ No pude generar la imagen del gráfico. {str(e)}"
+                }), 200
+        
+        # Detectar si se solicita EXPORTAR/DESCARGAR Excel
+        palabras_clave_excel = ['excel', 'exporta', 'exportar']
+        
+        frases_clave = [
+            'exporta a excel',
+            'exportar a excel',
+            'descarga el excel',
+            'en excel',
+            'como archivo',
+            'en archivo excel'
+        ]
+        
+        solicita_excel = (
+            any(palabra in pregunta_lower for palabra in palabras_clave_excel) or
+            any(frase in pregunta_lower for frase in frases_clave)
+        )
+        
+        if solicita_excel:
+            logger.info(f"Generando Excel para: {pregunta}")
+            
+            try:
+                # Si hay un último gráfico, usar esos datos filtrados
+                if ultimo_grafico and ultimo_grafico.get('grafico'):
+                    logger.info("Usando datos del último gráfico generado")
+                    excel_buffer = _generar_excel_desde_grafico(ultimo_grafico, codigo)
+                else:
+                    # Si no, generar informe completo
+                    logger.info("Generando informe completo")
+                    informe = analysis_agent.generar_informe_personalizado(codigo, pregunta)
+                    excel_buffer = _generar_excel_con_graficos_incrustados(informe)
+                
+                excel_buffer.seek(0)
+                
+                return send_file(
+                    excel_buffer,
+                    mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    as_attachment=True,
+                    download_name=f'Informe_{codigo}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx'
+                )
+            except ValueError as ve:
+                logger.warning(f"No se pudo generar Excel: {ve}")
+                return jsonify({
+                    'pregunta': pregunta,
+                    'respuesta': f"⚠️ {str(ve)}. No se puede generar el archivo Excel sin datos."
+                }), 200
+            except Exception as e:
+                logger.error(f"Error generando Excel: {e}")
+                resultado = analysis_agent.responder_pregunta(codigo, pregunta)
+                return jsonify(resultado), 200
+        else:
+            # Respuesta de texto normal
+            resultado = analysis_agent.responder_pregunta(codigo, pregunta)
+            return jsonify(resultado), 200
         
     except Exception as e:
         logger.error(f"Error respondiendo pregunta: {e}")
@@ -1356,6 +1613,194 @@ def generar_informe_personalizado(codigo):
     except Exception as e:
         logger.error(f"Error generando informe personalizado: {e}")
         return jsonify({'error': str(e)}), 500
+
+def _generar_imagen_grafico(grafico: dict) -> BytesIO:
+    """Generar imagen PNG de un gráfico usando matplotlib con alta calidad"""
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as ticker
+    
+    # Configurar estilo
+    plt.style.use('seaborn-v0_8-darkgrid')
+    
+    fig, ax = plt.subplots(figsize=(14, 7), dpi=150)
+    fig.patch.set_facecolor('white')
+    ax.set_facecolor('#f8f9fa')
+    
+    labels = grafico.get('labels', [])
+    datos = grafico.get('datos', [])
+    tipo = grafico.get('tipo', 'bar')
+    titulo = grafico.get('titulo', 'Gráfico')
+    
+    # Colores mejorados (mismo esquema que Chart.js)
+    colors = ['#4285F4', '#34A853', '#FBBC04', '#EA4335', '#9C27B0', '#00BCD4', '#FF9800', '#795548']
+    
+    if tipo == 'bar':
+        bars = ax.bar(labels, datos, color=colors[:len(datos)], 
+                     edgecolor='white', linewidth=1.5, alpha=0.85)
+        
+        # Configurar eje Y con formato de moneda
+        ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, p: f'${x:,.0f}'))
+        ax.set_ylabel('Valor Facturado', fontsize=13, fontweight='bold', color='#2c3e50')
+        ax.set_xlabel('')
+        
+        # Rotar labels si son largos
+        if any(len(str(label)) > 10 for label in labels):
+            plt.xticks(rotation=45, ha='right', fontsize=11)
+        else:
+            plt.xticks(fontsize=11)
+        
+        # Agregar valores encima de las barras con mejor formato
+        for bar in bars:
+            height = bar.get_height()
+            ax.text(bar.get_x() + bar.get_width()/2., height,
+                   f'${height:,.0f}',
+                   ha='center', va='bottom', fontsize=10, 
+                   fontweight='bold', color='#2c3e50')
+        
+        # Grid más sutil
+        ax.grid(axis='y', alpha=0.3, linestyle='--', linewidth=0.7)
+        ax.set_axisbelow(True)
+        
+    elif tipo == 'pie':
+        # Calcular porcentajes
+        total = sum(datos)
+        porcentajes = [(d/total)*100 for d in datos]
+        
+        # Crear función para mostrar porcentaje y valor
+        def autopct_format(pct, allvals):
+            absolute = int(pct/100.*sum(allvals))
+            return f'{pct:.1f}%\n${absolute:,.0f}'
+        
+        wedges, texts, autotexts = ax.pie(
+            datos, 
+            labels=labels, 
+            autopct=lambda pct: autopct_format(pct, datos),
+            colors=colors[:len(datos)],
+            startangle=90, 
+            pctdistance=0.75,
+            explode=[0.03] * len(datos),
+            shadow=True
+        )
+        
+        # Mejorar estilo de textos
+        for text in texts:
+            text.set_fontsize(11)
+            text.set_fontweight('bold')
+            text.set_color('#2c3e50')
+        
+        for autotext in autotexts:
+            autotext.set_color('white')
+            autotext.set_fontsize(9)
+            autotext.set_fontweight('bold')
+        
+        # Fondo blanco para pie charts
+        ax.set_facecolor('white')
+    
+    # Título mejorado
+    ax.set_title(titulo, fontsize=16, fontweight='bold', pad=25, color='#1a1a1a')
+    
+    # Ajustar márgenes
+    plt.tight_layout(pad=2.0)
+    
+    # Guardar en buffer con alta calidad
+    buf = BytesIO()
+    plt.savefig(buf, format='png', dpi=200, bbox_inches='tight', 
+                facecolor='white', edgecolor='none', pad_inches=0.3)
+    plt.close(fig)
+    buf.seek(0)
+    
+    return buf
+
+def _generar_excel_desde_grafico(ultimo_grafico: dict, codigo: str) -> BytesIO:
+    """Generar Excel con los datos específicos del gráfico mostrado"""
+    import xlsxwriter
+    
+    output = BytesIO()
+    workbook = xlsxwriter.Workbook(output, {'in_memory': True})
+    
+    grafico = ultimo_grafico['grafico']
+    labels = grafico.get('labels', [])
+    datos = grafico.get('datos', [])
+    titulo = grafico.get('titulo', 'Análisis')
+    columna = grafico.get('columna', 'Categoría')
+    
+    # Hoja 1: Datos
+    worksheet_datos = workbook.add_worksheet('Datos')
+    
+    # Formatos
+    header_format = workbook.add_format({
+        'bold': True,
+        'bg_color': '#4285F4',
+        'font_color': 'white',
+        'border': 1
+    })
+    
+    number_format = workbook.add_format({
+        'num_format': '$#,##0'
+    })
+    
+    # Escribir encabezados
+    worksheet_datos.write(0, 0, columna, header_format)
+    worksheet_datos.write(0, 1, 'Valor', header_format)
+    
+    # Escribir datos
+    for i, (label, valor) in enumerate(zip(labels, datos), start=1):
+        worksheet_datos.write(i, 0, str(label))
+        worksheet_datos.write(i, 1, valor, number_format)
+    
+    worksheet_datos.set_column(0, 0, 30)
+    worksheet_datos.set_column(1, 1, 20)
+    
+    # Hoja 2: Gráfico
+    worksheet_grafico = workbook.add_worksheet('Gráfico')
+    
+    chart = workbook.add_chart({'type': 'column'})
+    
+    chart.add_series({
+        'name': titulo,
+        'categories': ['Datos', 1, 0, len(labels), 0],
+        'values': ['Datos', 1, 1, len(labels), 1],
+        'fill': {'color': '#4285F4'},
+        'data_labels': {'value': True, 'num_format': '$#,##0'}
+    })
+    
+    chart.set_title({'name': titulo})
+    chart.set_x_axis({'name': columna})
+    chart.set_y_axis({'name': 'Valor', 'num_format': '$#,##0'})
+    chart.set_legend({'position': 'none'})
+    chart.set_size({'width': 720, 'height': 400})
+    
+    worksheet_grafico.insert_chart('B2', chart)
+    
+    # Hoja 3: Resumen
+    worksheet_resumen = workbook.add_worksheet('Resumen')
+    
+    title_format = workbook.add_format({
+        'bold': True,
+        'font_size': 14,
+        'font_color': '#4285F4'
+    })
+    
+    worksheet_resumen.write(0, 0, titulo, title_format)
+    worksheet_resumen.write(2, 0, 'Total de elementos:', header_format)
+    worksheet_resumen.write(2, 1, len(labels))
+    worksheet_resumen.write(3, 0, 'Valor total:', header_format)
+    worksheet_resumen.write(3, 1, sum(datos), number_format)
+    worksheet_resumen.write(4, 0, 'Valor promedio:', header_format)
+    worksheet_resumen.write(4, 1, sum(datos) / len(datos) if len(datos) > 0 else 0, number_format)
+    worksheet_resumen.write(5, 0, 'Valor máximo:', header_format)
+    worksheet_resumen.write(5, 1, max(datos) if datos else 0, number_format)
+    worksheet_resumen.write(5, 2, labels[datos.index(max(datos))] if datos else '')
+    
+    worksheet_resumen.set_column(0, 0, 20)
+    worksheet_resumen.set_column(1, 2, 18)
+    
+    workbook.close()
+    output.seek(0)
+    
+    return output
 
 def _generar_excel_con_graficos_incrustados(informe: dict) -> BytesIO:
     """Generar Excel con gráficos incrustados de Excel (nativos)"""
