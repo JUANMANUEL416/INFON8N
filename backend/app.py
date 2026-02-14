@@ -11,6 +11,7 @@ from flask_mail import Mail, Message
 import base64
 
 from db_manager import DatabaseManager
+import threading
 from models import ReporteConfig, CampoConfig, RelacionConfig
 from analysis_agent import DataAnalysisAgent
 from aclaraciones_manager import AclaracionesManager
@@ -85,11 +86,25 @@ def health():
 # API - ADMINISTRADOR
 # ============================================
 
+# Endpoint público para listar reportes activos (para el uso general del frontend)
+@app.route('/api/reportes', methods=['GET', 'OPTIONS'])
+def listar_reportes_publico():
+    """Listar reportes activos. Incluye OPTIONS para que el preflight CORS no falle."""
+    try:
+        if request.method == 'OPTIONS':
+            # Responder OK al preflight
+            return '', 200
+        reportes = db_manager.listar_reportes(solo_activos=True)
+        return jsonify(reportes), 200
+    except Exception as e:
+        logger.error(f"Error listando reportes públicos: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/admin/reportes', methods=['GET'])
 def listar_reportes():
-    """Listar todos los reportes"""
+    """Listar todos los reportes (incluyendo inactivos)"""
     try:
-        reportes = db_manager.listar_reportes()
+        reportes = db_manager.listar_reportes(solo_activos=False)
         return jsonify(reportes), 200
     except Exception as e:
         logger.error(f"Error listando reportes: {e}")
@@ -104,6 +119,27 @@ def crear_reporte():
         # Validar campos obligatorios
         if not datos.get('nombre') or not datos.get('codigo'):
             return jsonify({'error': 'Nombre y código son obligatorios'}), 400
+        
+        # Validar que se envíe listado de campos
+        campos = datos.get('campos')
+        if not campos or not isinstance(campos, list) or len(campos) == 0:
+            return jsonify({'error': 'Debe especificar el listado de campos del reporte'}), 400
+        
+        # Validar estructura mínima de cada campo
+        errores_campos = []
+        for i, c in enumerate(campos, start=1):
+            if not isinstance(c, dict):
+                errores_campos.append(f"Campo #{i} no es un objeto válido")
+                continue
+            if not c.get('nombre'):
+                errores_campos.append(f"Campo #{i} sin 'nombre'")
+            if not c.get('tipo') and not c.get('tipo_dato'):
+                errores_campos.append(f"Campo '{c.get('nombre','(sin nombre)')}' sin 'tipo' o 'tipo_dato'")
+            # Normalizar flags
+            if 'obligatorio' not in c:
+                c['obligatorio'] = False
+        if errores_campos:
+            return jsonify({'error': 'Errores en definición de campos', 'detalles': errores_campos}), 400
         
         # Validar con IA si está habilitado
         validacion_ia = None
@@ -157,11 +193,21 @@ def crear_reporte():
         
         # Agregar información de validación si existe
         if validacion_ia:
+            tiene_dudas = len(validacion_ia.get('campos_dudosos', [])) > 0
             respuesta['validacion_ia'] = {
                 'puntuacion': validacion_ia.get('puntuacion_claridad', 0),
                 'campos_con_dudas': len(validacion_ia.get('campos_dudosos', [])),
-                'requiere_aclaraciones': len(validacion_ia.get('campos_dudosos', [])) > 0
+                'requiere_aclaraciones': tiene_dudas,
+                'estado_validacion': 'pendiente' if tiene_dudas else 'validado'
             }
+            # Si hay dudas, desactivar el reporte hasta que se resuelva
+            if tiene_dudas:
+                try:
+                    db_manager.actualizar_reporte(datos['codigo'], {'activo': False})
+                    respuesta['reporte_desactivado'] = True
+                    respuesta['message'] += " (Creado inactivo: requiere aclaraciones de campos)"
+                except Exception as e_upd:
+                    logger.warning(f"No se pudo desactivar reporte con dudas: {e_upd}")
         
         return jsonify(respuesta), 201
         
@@ -219,6 +265,138 @@ def eliminar_reporte(codigo):
 # ============================================
 # API - SISTEMA DE ACLARACIONES Y VALIDACIONES IA
 # ============================================
+
+# ============================================
+# API - ADMIN: GESTIÓN DE CAMPOS DE REPORTE
+# ============================================
+
+@app.route('/api/admin/reportes/<codigo>/campos', methods=['GET'])
+def admin_listar_campos(codigo):
+    """Listar campos del reporte para administración."""
+    try:
+        reporte = db_manager.obtener_reporte_admin(codigo)
+        if not reporte:
+            return jsonify({'error': 'Reporte no encontrado'}), 404
+        campos = reporte.get('campos') or []
+        if isinstance(campos, str):
+            try:
+                campos = json.loads(campos)
+            except Exception:
+                campos = []
+        return jsonify({'campos': campos, 'total': len(campos)}), 200
+    except Exception as e:
+        logger.error(f"Error listando campos admin: {e}")
+        return jsonify({'error': str(e)}), 500
+
+def _validar_campos_definicion(campos: list):
+    """Validar estructura mínima de campos."""
+    errores = []
+    for i, c in enumerate(campos, start=1):
+        if not isinstance(c, dict):
+            errores.append(f"Campo #{i} no es un objeto válido")
+            continue
+        if not c.get('nombre'):
+            errores.append(f"Campo #{i} sin 'nombre'")
+        if not c.get('tipo') and not c.get('tipo_dato'):
+            errores.append(f"Campo '{c.get('nombre','(sin nombre)')}' sin 'tipo' o 'tipo_dato'")
+        if 'obligatorio' not in c:
+            c['obligatorio'] = False
+    return errores
+
+def _post_validacion_ia_campos(codigo: str, campos: list):
+    """Ejecutar validación IA y crear aclaraciones si hay dudas. Posible desactivación."""
+    try:
+        validacion_ia = analysis_agent.validar_reporte_con_ia(campos)
+        aclaraciones_manager.guardar_validacion_reporte(codigo, validacion_ia)
+        if validacion_ia.get('campos_dudosos'):
+            for campo_dudoso in validacion_ia['campos_dudosos']:
+                if campo_dudoso.get('severidad') in ['alta', 'media']:
+                    pregunta = analysis_agent.generar_pregunta_aclaracion(
+                        campo_dudoso.get('nombre'),
+                        campo_dudoso.get('tipo', 'texto'),
+                        campo_dudoso.get('descripcion', ''),
+                        campo_dudoso.get('razon', '')
+                    )
+                    aclaraciones_manager.crear_aclaracion(
+                        codigo,
+                        campo_dudoso.get('nombre'),
+                        pregunta,
+                        json.dumps(campo_dudoso)
+                    )
+            # Desactivar reporte hasta resolución
+            db_manager.actualizar_reporte(codigo, {'activo': False})
+            return {'requiere_aclaraciones': True, 'estado_validacion': 'pendiente'}
+        return {'requiere_aclaraciones': False, 'estado_validacion': 'validado'}
+    except Exception as e:
+        logger.warning(f"Validación IA de campos falló: {e}")
+        return {'requiere_aclaraciones': False, 'estado_validacion': 'sin-validar'}
+
+@app.route('/api/admin/reportes/<codigo>/campos', methods=['PUT'])
+def admin_actualizar_campos(codigo):
+    """Actualizar listado completo de campos de un reporte."""
+    try:
+        datos = request.json or {}
+        campos = datos.get('campos')
+        if not campos or not isinstance(campos, list) or len(campos) == 0:
+            return jsonify({'error': 'Debe especificar el listado de campos del reporte'}), 400
+        errores = _validar_campos_definicion(campos)
+        if errores:
+            return jsonify({'error': 'Errores en definición de campos', 'detalles': errores}), 400
+        ok = db_manager.actualizar_reporte(codigo, {'campos': campos})
+        if not ok:
+            return jsonify({'error': 'No se pudo actualizar el reporte'}), 500
+        post = _post_validacion_ia_campos(codigo, campos)
+        return jsonify({'success': True, 'message': 'Campos actualizados', **post}), 200
+    except Exception as e:
+        logger.error(f"Error actualizando campos admin: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/reportes/<codigo>/campos', methods=['POST'])
+def admin_agregar_campo(codigo):
+    """Agregar un campo al reporte (evita duplicados por nombre)."""
+    try:
+        datos = request.json or {}
+        campo = datos.get('campo')
+        if not campo or not isinstance(campo, dict):
+            return jsonify({'error': 'Debe enviar objeto "campo" válido'}), 400
+        campos_exist = db_manager.obtener_reporte_admin(codigo)
+        if not campos_exist:
+            return jsonify({'error': 'Reporte no encontrado'}), 404
+        campos = campos_exist.get('campos') or []
+        if isinstance(campos, str):
+            try:
+                campos = json.loads(campos)
+            except Exception:
+                campos = []
+        # Validar nuevo campo en conjunto
+        nuevos_campos = [c for c in campos if c.get('nombre') != campo.get('nombre')]
+        nuevos_campos.append(campo)
+        errores = _validar_campos_definicion(nuevos_campos)
+        if errores:
+            return jsonify({'error': 'Errores en definición de campos', 'detalles': errores}), 400
+        ok = db_manager.actualizar_reporte(codigo, {'campos': nuevos_campos})
+        if not ok:
+            return jsonify({'error': 'No se pudo actualizar el reporte'}), 500
+        post = _post_validacion_ia_campos(codigo, nuevos_campos)
+        return jsonify({'success': True, 'message': 'Campo agregado', **post}), 200
+    except Exception as e:
+        logger.error(f"Error agregando campo admin: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/reportes/<codigo>/campos/<nombre>/aclaracion', methods=['POST'])
+def admin_crear_aclaracion_campo(codigo, nombre):
+    """Generar una aclaración para un campo específico del reporte."""
+    try:
+        datos = request.json or {}
+        descripcion = datos.get('descripcion', '')
+        tipo = datos.get('tipo', 'texto')
+        razon = datos.get('razon', 'Necesita aclaración por parte del administrador')
+        pregunta = analysis_agent.generar_pregunta_aclaracion(nombre, tipo, descripcion, razon)
+        aclaraciones_manager.crear_aclaracion(codigo, nombre, pregunta, json.dumps({'tipo': tipo, 'razon': razon}))
+        return jsonify({'success': True, 'pregunta': pregunta}), 201
+    except Exception as e:
+        logger.error(f"Error creando aclaración de campo: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/aclaraciones/<reporte_codigo>', methods=['GET'])
 def obtener_aclaraciones(reporte_codigo):
@@ -537,21 +715,39 @@ def upload_file():
         codigo = request.form['type']
         file = request.files['file']
         
-        if not file.filename.endswith('.xlsx'):
-            return jsonify({'error': 'Solo archivos .xlsx permitidos'}), 400
+        # Validar extensión (.xlsx o .xls)
+        if not (file.filename.lower().endswith('.xlsx') or file.filename.lower().endswith('.xls')):
+            return jsonify({'error': 'Solo archivos .xlsx o .xls permitidos'}), 400
         
         # Obtener configuración del reporte
         reporte = db_manager.obtener_reporte(codigo)
         if not reporte:
             return jsonify({'error': 'Reporte no encontrado'}), 404
         
-        # Leer Excel
-        df = pd.read_excel(file, sheet_name='Datos')
+        # Leer Excel (preferir hoja 'Datos' ignorando mayúsculas/espacios; si no existe usar primera hoja)
+        try:
+            xls = pd.ExcelFile(file)
+            sheet_names = xls.sheet_names
+            normalized = [s.strip().lower() for s in sheet_names]
+            hoja = sheet_names[normalized.index('datos')] if 'datos' in normalized else sheet_names[0]
+            logger.info(f"Hojas del Excel: {sheet_names}. Usando hoja: {hoja}")
+            df = xls.parse(sheet_name=hoja)
+        except Exception as e:
+            logger.warning(f"Fallo leyendo hoja específica, intentando fallback a primera hoja. Error: {e}")
+            try:
+                # Reiniciar el puntero del archivo y leer la primera hoja
+                file.seek(0)
+                df = pd.read_excel(file, sheet_name=0)
+            except Exception as e2:
+                raise e2
         
         # Validar estructura
         campos_config = reporte.get('campos', [])
         if isinstance(campos_config, str):
-            campos_config = json.loads(campos_config)
+            try:
+                campos_config = json.loads(campos_config)
+            except Exception:
+                logger.warning("No se pudo parsear campos_config como JSON; usando valor original si es lista")
         
         campos_requeridos = [c['nombre'] for c in campos_config if c.get('obligatorio')]
         campos_excel = df.columns.tolist()
@@ -589,19 +785,38 @@ def subir_datos(codigo):
         
         file = request.files['file']
         
-        if not file.filename.endswith('.xlsx'):
-            return jsonify({'error': 'Solo archivos .xlsx permitidos'}), 400
+        # Validar extensión (.xlsx o .xls)
+        if not (file.filename.lower().endswith('.xlsx') or file.filename.lower().endswith('.xls')):
+            return jsonify({'error': 'Solo archivos .xlsx o .xls permitidos'}), 400
         
         # Obtener configuración del reporte
         reporte = db_manager.obtener_reporte(codigo)
         if not reporte:
             return jsonify({'error': 'Reporte no encontrado'}), 404
         
-        # Leer Excel
-        df = pd.read_excel(file, sheet_name='Datos')
+        # Leer Excel (preferir hoja 'Datos' ignorando mayúsculas/espacios; si no existe usar primera hoja)
+        try:
+            xls = pd.ExcelFile(file)
+            sheet_names = xls.sheet_names
+            normalized = [s.strip().lower() for s in sheet_names]
+            hoja = sheet_names[normalized.index('datos')] if 'datos' in normalized else sheet_names[0]
+            logger.info(f"Hojas del Excel: {sheet_names}. Usando hoja: {hoja}")
+            df = xls.parse(sheet_name=hoja)
+        except Exception as e:
+            logger.warning(f"Fallo leyendo hoja específica, intentando fallback a primera hoja. Error: {e}")
+            try:
+                file.seek(0)
+                df = pd.read_excel(file, sheet_name=0)
+            except Exception as e2:
+                raise e2
         
         # Validar estructura
         campos_config = reporte.get('campos', [])
+        if isinstance(campos_config, str):
+            try:
+                campos_config = json.loads(campos_config)
+            except Exception:
+                logger.warning("No se pudo parsear campos_config como JSON en subir_datos; usando valor original si es lista")
         campos_requeridos = [c['nombre'] for c in campos_config if c.get('obligatorio')]
         campos_excel = df.columns.tolist()
         
@@ -618,11 +833,20 @@ def subir_datos(codigo):
         # Insertar en BD
         resultado = db_manager.insertar_datos(codigo, datos_lista, usuario='usuario')
         
+        # Auto-indexar en ChromaDB en segundo plano para evitar bloqueos largos
+        try:
+            if resultado['registros_insertados'] > 0:
+                logger.info(f"Auto-indexación en background de {resultado['registros_insertados']} registros en ChromaDB...")
+                threading.Thread(target=lambda: analysis_agent.indexar_datos_reporte(codigo), daemon=True).start()
+        except Exception as e:
+            logger.warning(f"Error lanzando auto-indexación en background (no crítico): {e}")
+        
         return jsonify({
             'success': True,
             'registros_insertados': resultado['registros_insertados'],
             'registros_error': resultado['registros_error'],
-            'message': f"Se procesaron {resultado['registros_insertados']} registros"
+            'message': f"Se procesaron {resultado['registros_insertados']} registros",
+            'auto_indexado': 'en_progreso'
         }), 200
         
     except Exception as e:
@@ -638,6 +862,46 @@ def obtener_datos(codigo):
         return jsonify(datos), 200
     except Exception as e:
         logger.error(f"Error obteniendo datos: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/reportes/<codigo>/campos', methods=['GET'])
+def obtener_campos(codigo):
+    """Obtener nombres de campos del reporte (configurados o inferidos)."""
+    try:
+        reporte = db_manager.obtener_reporte(codigo)
+        if not reporte:
+            return jsonify({'error': 'Reporte no encontrado o inactivo'}), 404
+
+        campos = reporte.get('campos') or []
+        origen = 'config'
+        if isinstance(campos, str):
+            try:
+                import json as _json
+                campos = _json.loads(campos)
+            except Exception:
+                campos = []
+
+        if not campos:
+            muestra = db_manager.consultar_datos(codigo, limite=1)
+            if muestra:
+                datos_dict = muestra[0].get('datos', {})
+                campos = [
+                    {
+                        'nombre': k,
+                        'etiqueta': k,
+                        'descripcion': 'Inferido desde datos',
+                        'tipo_dato': 'texto'
+                    } for k in datos_dict.keys()
+                ]
+                origen = 'inferido'
+
+        return jsonify({
+            'origen': origen,
+            'total_campos': len(campos),
+            'campos': campos
+        }), 200
+    except Exception as e:
+        logger.error(f"Error obteniendo campos: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/reportes/<codigo>/estadisticas', methods=['GET'])
@@ -1043,12 +1307,21 @@ def webhook_upload(codigo):
         # Insertar en BD
         resultado = db_manager.insertar_datos(codigo, datos_lista, usuario='webhook')
         
+        # Auto-indexar en ChromaDB en background
+        try:
+            if resultado['registros_insertados'] > 0:
+                logger.info(f"Auto-indexación en background de {resultado['registros_insertados']} registros desde webhook...")
+                threading.Thread(target=lambda: analysis_agent.indexar_datos_reporte(codigo), daemon=True).start()
+        except Exception as e:
+            logger.warning(f"Error lanzando auto-indexación en background: {e}")
+        
         return jsonify({
             'success': True,
             'reporte': reporte['nombre'],
             'registros_insertados': resultado['registros_insertados'],
             'registros_error': resultado['registros_error'],
-            'mensaje': f"Se procesaron {resultado['registros_insertados']} registros correctamente"
+            'mensaje': f"Se procesaron {resultado['registros_insertados']} registros correctamente",
+            'auto_indexado': 'en_progreso'
         }), 200
         
     except Exception as e:
@@ -1071,10 +1344,11 @@ def indexar_datos_reporte(codigo):
 
 @app.route('/api/analysis/<codigo>/pregunta', methods=['POST'])
 def hacer_pregunta(codigo):
-    """Hacer una pregunta sobre los datos del reporte"""
+    """Hacer una pregunta sobre los datos del reporte con memoria conversacional"""
     try:
         data = request.get_json()
         pregunta = data.get('pregunta')
+        session_id = data.get('session_id', 'default')  # 🆕 Soporte para sesiones
         ultimo_grafico = data.get('ultimoGrafico')  # Recibir último gráfico del frontend
         
         if not pregunta:
@@ -1155,15 +1429,45 @@ def hacer_pregunta(codigo):
                 }), 200
             except Exception as e:
                 logger.error(f"Error generando Excel: {e}")
-                resultado = analysis_agent.responder_pregunta(codigo, pregunta)
+                # 🆕 Usar session_id en la respuesta
+                resultado = analysis_agent.responder_pregunta(codigo, pregunta, session_id)
                 return jsonify(resultado), 200
         else:
-            # Respuesta de texto normal
-            resultado = analysis_agent.responder_pregunta(codigo, pregunta)
+            # 🆕 Respuesta con memoria conversacional y function calling
+            resultado = analysis_agent.responder_pregunta(codigo, pregunta, session_id)
             return jsonify(resultado), 200
         
     except Exception as e:
         logger.error(f"Error respondiendo pregunta: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# 🆕 NUEVOS ENDPOINTS DE GESTIÓN DE SESIONES
+@app.route('/api/analysis/<codigo>/session/<session_id>/historial', methods=['GET'])
+def obtener_historial_sesion(codigo, session_id):
+    """Obtener historial de conversación de una sesión"""
+    try:
+        historial = analysis_agent.obtener_historial(session_id)
+        return jsonify({
+            'session_id': session_id,
+            'mensajes': len(historial),
+            'historial': historial
+        }), 200
+    except Exception as e:
+        logger.error(f"Error obteniendo historial: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/analysis/<codigo>/session/<session_id>/limpiar', methods=['POST'])
+def limpiar_sesion(codigo, session_id):
+    """Limpiar historial de conversación de una sesión"""
+    try:
+        analysis_agent.limpiar_sesion(session_id)
+        return jsonify({
+            'success': True,
+            'message': f'Sesión {session_id} limpiada',
+            'session_id': session_id
+        }), 200
+    except Exception as e:
+        logger.error(f"Error limpiando sesión: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/analysis/<codigo>/analisis', methods=['GET'])
@@ -2058,6 +2362,534 @@ def _enviar_informe_por_correo(informe: dict, excel_buffer: BytesIO, destinatari
     except Exception as e:
         logger.error(f"Error enviando informe por correo: {e}")
         raise
+
+# ============================================
+# ENDPOINTS: CONTROL DE PERIODOS Y CARGAS
+# ============================================
+
+@app.route('/api/reportes/crear-con-validacion', methods=['POST'])
+def crear_reporte_con_validacion():
+    """
+    Crear un nuevo reporte con validación de IA
+    Puede recibir campos manuales o archivo Excel
+    """
+    try:
+        from validador_ia import validador_ia
+        
+        data = request.get_json()
+        nombre = data.get('nombre')
+        descripcion = data.get('descripcion')
+        campos = data.get('campos', [])  # Lista de {nombre, tipo, descripcion}
+        datos_muestra = data.get('datos_muestra', [])  # Opcional: datos de ejemplo
+        
+        if not nombre:
+            return jsonify({"error": "Nombre del reporte requerido"}), 400
+        
+        if not campos or len(campos) < 1:
+            return jsonify({"error": "Debe proporcionar al menos 1 campo"}), 400
+        
+        # Validar con IA
+        validacion = validador_ia.validar_estructura_reporte(
+            nombre_reporte=nombre,
+            campos=campos,
+            datos_muestra=datos_muestra,
+            descripcion=descripcion
+        )
+        
+        # Si no es válido, devolver para que usuario aclare
+        if not validacion['valido']:
+            return jsonify({
+                "validacion_requerida": True,
+                "validacion": validacion,
+                "mensaje": "El reporte requiere aclaraciones antes de ser creado"
+            }), 200
+        
+        # Si requiere aclaraciones de campos
+        if validacion['campos_requieren_aclaracion']:
+            return jsonify({
+                "validacion_requerida": True,
+                "validacion": validacion,
+                "mensaje": f"{len(validacion['campos_requieren_aclaracion'])} campos requieren aclaración"
+            }), 200
+        
+        # Si no tiene campo de fecha y necesitamos periodo
+        requiere_periodo = data.get('requiere_periodo', True)
+        if requiere_periodo and not validacion['tiene_campo_fecha']:
+            return jsonify({
+                "validacion_requerida": True,
+                "validacion": validacion,
+                "mensaje": "El reporte debe tener un campo de fecha para control de periodos"
+            }), 200
+        
+        # Crear el reporte en la BD
+        codigo = nombre.lower().replace(' ', '_')[:50]
+        tipo_periodo = data.get('tipo_periodo') or validacion.get('tipo_periodo_sugerido', 'mensual')
+        campo_fecha = data.get('campo_fecha') or validacion.get('campo_fecha_sugerido')
+        
+        resultado = db_manager.crear_reporte_config(
+            nombre=nombre,
+            codigo=codigo,
+            descripcion=descripcion,
+            campos=campos,
+            categoria=data.get('categoria', 'general'),
+            tipo_periodo=tipo_periodo,
+            campo_fecha=campo_fecha,
+            requiere_periodo=requiere_periodo,
+            validacion_ia=validacion
+        )
+        
+        return jsonify({
+            "success": True,
+            "reporte": resultado,
+            "validacion": validacion,
+            "mensaje": f"Reporte '{nombre}' creado exitosamente"
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Error creando reporte con validación: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/reportes/<codigo>/cargar-datos', methods=['POST'])
+def cargar_datos_reporte(codigo):
+    """
+    Cargar datos a un reporte (Excel o manual)
+    Crea registro en datos_temporales para aprobación
+    """
+    try:
+        from validador_ia import validador_ia
+        from datetime import datetime, date
+        
+        # Obtener configuración del reporte
+        reporte_config = db_manager.obtener_reporte_por_codigo(codigo)
+        if not reporte_config:
+            return jsonify({"error": "Reporte no encontrado"}), 404
+        
+        # Obtener datos (JSON o archivo)
+        if request.is_json:
+            data = request.get_json()
+            datos = data.get('datos', [])
+            archivo_nombre = data.get('archivo_nombre', 'manual')
+        else:
+            # Subida de Excel
+            if 'file' not in request.files:
+                return jsonify({"error": "No se recibió archivo"}), 400
+            
+            file = request.files['file']
+            archivo_nombre = file.filename
+            
+            # Procesar Excel
+            import pandas as pd
+            df = pd.read_excel(file)
+            datos = df.to_dict('records')
+        
+        # Validar mínimo 2 registros
+        if len(datos) < 2:
+            return jsonify({"error": "Se requieren al menos 2 registros"}), 400
+        
+        # Obtener periodo de la carga
+        tipo_periodo = reporte_config.get('tipo_periodo', 'mensual')
+        campo_fecha = reporte_config.get('campo_fecha')
+        
+        if not campo_fecha:
+            return jsonify({"error": "El reporte no tiene configurado campo de fecha"}), 400
+        
+        # Extraer fechas y calcular periodo
+        fechas = []
+        for registro in datos:
+            fecha_str = registro.get(campo_fecha)
+            if fecha_str:
+                try:
+                    if isinstance(fecha_str, str):
+                        fecha = datetime.strptime(fecha_str, '%Y-%m-%d').date()
+                    elif isinstance(fecha_str, date):
+                        fecha = fecha_str
+                    else:
+                        fecha = datetime.fromisoformat(str(fecha_str)).date()
+                    fechas.append(fecha)
+                except:
+                    pass
+        
+        if not fechas:
+            return jsonify({"error": f"No se encontraron fechas válidas en el campo '{campo_fecha}'"}), 400
+        
+        # Calcular periodo
+        fecha_referencia = min(fechas)
+        periodo_calc = db_manager.ejecutar_query(
+            "SELECT * FROM calcular_periodo(%s, %s)",
+            (tipo_periodo, fecha_referencia)
+        )[0]
+        
+        periodo_inicio = periodo_calc[0]
+        periodo_fin = periodo_calc[1]
+        
+        # Validar que no se solape con cargas existentes
+        validacion_periodo = db_manager.ejecutar_query(
+            "SELECT * FROM validar_periodo(%s, %s, %s)",
+            (codigo, periodo_inicio, periodo_fin)
+        )[0]
+        
+        if not validacion_periodo[0]:  # No es válido
+            return jsonify({
+                "error": "Periodo solapado",
+                "mensaje": validacion_periodo[1],
+                "cargas_conflicto": validacion_periodo[2]
+            }), 409
+        
+        # Validar estructura con IA
+        validacion_datos = validador_ia.validar_datos_carga(
+            reporte_codigo=codigo,
+            reporte_nombre=reporte_config['nombre'],
+            campos_esperados=reporte_config.get('campos', []),
+            datos=datos,
+            periodo_esperado={
+                'tipo': tipo_periodo,
+                'campo_fecha': campo_fecha,
+                'inicio': periodo_inicio,
+                'fin': periodo_fin
+            }
+        )
+        
+        if not validacion_datos['valido']:
+            return jsonify({
+                "validacion_requerida": True,
+                "validacion": validacion_datos,
+                "mensaje": "Los datos tienen errores de validación"
+            }), 400
+        
+        # Crear registro de carga
+        usuario = request.headers.get('X-User', 'admin')  # Obtener de sesión
+        
+        carga_id = db_manager.ejecutar_query(
+            """
+            INSERT INTO cargas_datos 
+            (reporte_codigo, periodo_inicio, periodo_fin, periodo_tipo, cantidad_registros, 
+             archivo_original, usuario_carga, estado, validacion_previa)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+            """,
+            (codigo, periodo_inicio, periodo_fin, tipo_periodo, len(datos),
+             archivo_nombre, usuario, 'pendiente', json.dumps(validacion_datos)),
+            commit=True
+        )[0][0]
+        
+        # Insertar datos en tabla temporal
+        for idx, registro in enumerate(datos, start=1):
+            db_manager.ejecutar_query(
+                """
+                INSERT INTO datos_temporales 
+                (carga_id, reporte_codigo, datos, fila_numero)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (carga_id, codigo, json.dumps(registro), idx),
+                commit=False
+            )
+        
+        db_manager.commit()
+        
+        return jsonify({
+            "success": True,
+            "carga_id": carga_id,
+            "periodo": {
+                "inicio": str(periodo_inicio),
+                "fin": str(periodo_fin),
+                "tipo": tipo_periodo
+            },
+            "cantidad_registros": len(datos),
+            "validacion": validacion_datos,
+            "mensaje": f"Carga creada exitosamente. Pendiente de aprobación."
+        }), 201
+        
+    except Exception as e:
+        logger.error(f"Error cargando datos: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/cargas/<int:carga_id>', methods=['GET'])
+def obtener_carga(carga_id):
+    """Obtener detalles de una carga"""
+    try:
+        carga = db_manager.ejecutar_query(
+            "SELECT * FROM v_resumen_cargas WHERE id = %s",
+            (carga_id,)
+        )
+        
+        if not carga:
+            return jsonify({"error": "Carga no encontrada"}), 404
+        
+        # Convertir a dict
+        carga_dict = dict(zip(
+            ['id', 'reporte_codigo', 'reporte_nombre', 'periodo_tipo', 'periodo_inicio', 
+             'periodo_fin', 'cantidad_registros', 'estado', 'usuario_carga', 'fecha_carga',
+             'fecha_aprobacion', 'aprobado_por', 'archivo_original', 'registros_pendientes',
+             'registros_aprobados'],
+            carga[0]
+        ))
+        
+        # Obtener muestra de datos temporales
+        datos_temp = db_manager.ejecutar_query(
+            """
+            SELECT datos, fila_numero, errores 
+            FROM datos_temporales 
+            WHERE carga_id = %s 
+            ORDER BY fila_numero 
+            LIMIT 10
+            """,
+            (carga_id,)
+        )
+        
+        carga_dict['datos_muestra'] = [
+            {
+                'fila': row[1],
+                'datos': json.loads(row[0]) if isinstance(row[0], str) else row[0],
+                'errores': json.loads(row[2]) if row[2] else None
+            }
+            for row in datos_temp
+        ]
+        
+        return jsonify(carga_dict), 200
+        
+    except Exception as e:
+        logger.error(f"Error obteniendo carga: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/cargas/<int:carga_id>/aprobar', methods=['POST'])
+def aprobar_carga(carga_id):
+    """Aprobar carga y mover datos a tabla definitiva"""
+    try:
+        from datetime import datetime
+        
+        # Obtener información de la carga
+        carga = db_manager.ejecutar_query(
+            "SELECT reporte_codigo, estado, cantidad_registros FROM cargas_datos WHERE id = %s",
+            (carga_id,)
+        )
+        
+        if not carga:
+            return jsonify({"error": "Carga no encontrada"}), 404
+        
+        reporte_codigo, estado, cantidad = carga[0]
+        
+        if estado == 'aprobado':
+            return jsonify({"error": "La carga ya fue aprobada"}), 400
+        
+        # Obtener usuario que aprueba
+        data = request.get_json() or {}
+        usuario = data.get('usuario', request.headers.get('X-User', 'admin'))
+        notas = data.get('notas', '')
+        
+        # Mover datos de temporal a definitivo
+        db_manager.ejecutar_query(
+            """
+            INSERT INTO datos_reportes (reporte_codigo, datos, carga_id, fecha_periodo, periodo_inicio, periodo_fin, uploaded_by)
+            SELECT 
+                reporte_codigo,
+                datos,
+                carga_id,
+                fecha_extraida,
+                periodo_inicio,
+                periodo_fin,
+                %s
+            FROM datos_temporales
+            WHERE carga_id = %s
+            """,
+            (usuario, carga_id),
+            commit=False
+        )
+        
+        # Actualizar estado de carga
+        db_manager.ejecutar_query(
+            """
+            UPDATE cargas_datos 
+            SET estado = 'aprobado', 
+                fecha_aprobacion = %s, 
+                aprobado_por = %s,
+                notas = %s
+            WHERE id = %s
+            """,
+            (datetime.now(), usuario, notas, carga_id),
+            commit=False
+        )
+        
+        # Borrar datos temporales (ya están en definitiva)
+        db_manager.ejecutar_query(
+            "DELETE FROM datos_temporales WHERE carga_id = %s",
+            (carga_id,),
+            commit=True
+        )
+        
+        # Reindexar en ChromaDB
+        try:
+            indexar_datos_reporte(reporte_codigo)
+        except Exception as e:
+            logger.warning(f"Error reindexando después de aprobar: {e}")
+        
+        return jsonify({
+            "success": True,
+            "mensaje": f"Carga aprobada. {cantidad} registros movidos a datos definitivos.",
+            "reporte_codigo": reporte_codigo
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error aprobando carga: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/cargas/<int:carga_id>/rechazar', methods=['POST'])
+def rechazar_carga(carga_id):
+    """Rechazar carga y eliminar datos temporales"""
+    try:
+        data = request.get_json() or {}
+        razon = data.get('razon', 'No especificada')
+        usuario = data.get('usuario', request.headers.get('X-User', 'admin'))
+        
+        # Actualizar estado
+        db_manager.ejecutar_query(
+            """
+            UPDATE cargas_datos 
+            SET estado = 'rechazado', 
+                errores_validacion = %s,
+                aprobado_por = %s
+            WHERE id = %s
+            """,
+            (razon, usuario, carga_id),
+            commit=False
+        )
+        
+        # Eliminar datos temporales
+        db_manager.ejecutar_query(
+            "DELETE FROM datos_temporales WHERE carga_id = %s",
+            (carga_id,),
+            commit=True
+        )
+        
+        return jsonify({
+            "success": True,
+            "mensaje": "Carga rechazada y datos temporales eliminados"
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error rechazando carga: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/reportes/<codigo>/cargas', methods=['GET'])
+def listar_cargas_reporte(codigo):
+    """Listar historial de cargas de un reporte"""
+    try:
+        estado_filtro = request.args.get('estado')  # pendiente, aprobado, rechazado
+        
+        query = "SELECT * FROM v_resumen_cargas WHERE reporte_codigo = %s"
+        params = [codigo]
+        
+        if estado_filtro:
+            query += " AND estado = %s"
+            params.append(estado_filtro)
+        
+        query += " ORDER BY fecha_carga DESC"
+        
+        cargas = db_manager.ejecutar_query(query, tuple(params))
+        
+        resultado = []
+        for carga in cargas:
+            resultado.append(dict(zip(
+                ['id', 'reporte_codigo', 'reporte_nombre', 'periodo_tipo', 'periodo_inicio', 
+                 'periodo_fin', 'cantidad_registros', 'estado', 'usuario_carga', 'fecha_carga',
+                 'fecha_aprobacion', 'aprobado_por', 'archivo_original', 'registros_pendientes',
+                 'registros_aprobados'],
+                carga
+            )))
+        
+        return jsonify(resultado), 200
+        
+    except Exception as e:
+        logger.error(f"Error listando cargas: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/reportes/<codigo>/datos-por-periodo', methods=['GET'])
+def consultar_datos_periodo(codigo):
+    """
+    Consultar datos de un reporte por fecha o rango de fechas
+    Query params: fecha, fecha_inicio, fecha_fin
+    """
+    try:
+        fecha_str = request.args.get('fecha')
+        fecha_inicio_str = request.args.get('fecha_inicio')
+        fecha_fin_str = request.args.get('fecha_fin')
+        
+        from datetime import datetime
+        
+        if fecha_str:
+            # Consulta por fecha específica
+            fecha = datetime.strptime(fecha_str, '%Y-%m-%d').date()
+            
+            datos = db_manager.ejecutar_query(
+                """
+                SELECT datos, fecha_periodo, periodo_inicio, periodo_fin, created_at
+                FROM datos_reportes
+                WHERE reporte_codigo = %s 
+                AND fecha_periodo = %s
+                ORDER BY created_at DESC
+                """,
+                (codigo, fecha)
+            )
+        elif fecha_inicio_str and fecha_fin_str:
+            # Consulta por rango
+            fecha_inicio = datetime.strptime(fecha_inicio_str, '%Y-%m-%d').date()
+            fecha_fin = datetime.strptime(fecha_fin_str, '%Y-%m-%d').date()
+            
+            datos = db_manager.ejecutar_query(
+                """
+                SELECT datos, fecha_periodo, periodo_inicio, periodo_fin, created_at
+                FROM datos_reportes
+                WHERE reporte_codigo = %s 
+                AND fecha_periodo BETWEEN %s AND %s
+                ORDER BY fecha_periodo, created_at DESC
+                """,
+                (codigo, fecha_inicio, fecha_fin)
+            )
+        else:
+            # Sin filtro de fecha, devolver todo (limitado)
+            datos = db_manager.ejecutar_query(
+                """
+                SELECT datos, fecha_periodo, periodo_inicio, periodo_fin, created_at
+                FROM datos_reportes
+                WHERE reporte_codigo = %s
+                ORDER BY created_at DESC
+                LIMIT 100
+                """,
+                (codigo,)
+            )
+        
+        resultado = []
+        for row in datos:
+            datos_json = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+            resultado.append({
+                'datos': datos_json,
+                'fecha_periodo': str(row[1]) if row[1] else None,
+                'periodo_inicio': str(row[2]) if row[2] else None,
+                'periodo_fin': str(row[3]) if row[3] else None,
+                'fecha_carga': str(row[4]) if row[4] else None
+            })
+        
+        return jsonify({
+            "reporte_codigo": codigo,
+            "cantidad": len(resultado),
+            "datos": resultado
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error consultando datos por periodo: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 # ============================================
 # INICIALIZACIÓN

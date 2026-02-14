@@ -36,6 +36,10 @@ class DataAnalysisAgent:
         self.openai_key = openai_api_key or os.getenv('OPENAI_API_KEY')
         if not self.openai_key:
             logger.warning("No se configuró OPENAI_API_KEY. Algunas funciones estarán limitadas.")
+        
+        # 🆕 Sistema de memoria conversacional
+        self.conversaciones = {}  # {session_id: [{role, content}]}
+        self.max_historial = 10   # Últimos 10 mensajes por sesión
     
     @property
     def openai_client(self):
@@ -59,6 +63,373 @@ class DataAnalysisAgent:
                 raise Exception("ChromaDB no disponible. Asegúrate de que el servicio esté corriendo.")
         return self._chroma_client
     
+    # ============================================
+    # SISTEMA DE MEMORIA CONVERSACIONAL
+    # ============================================
+    
+    def obtener_historial(self, session_id: str) -> List[Dict]:
+        """Obtener historial de conversación de una sesión"""
+        return self.conversaciones.get(session_id, [])
+    
+    def agregar_mensaje(self, session_id: str, role: str, content: str):
+        """Agregar mensaje al historial de conversación"""
+        if session_id not in self.conversaciones:
+            self.conversaciones[session_id] = []
+        
+        self.conversaciones[session_id].append({
+            "role": role,
+            "content": content
+        })
+        
+        # Mantener solo los últimos N mensajes
+        if len(self.conversaciones[session_id]) > self.max_historial * 2:  # *2 porque user+assistant
+            self.conversaciones[session_id] = self.conversaciones[session_id][-self.max_historial*2:]
+        
+        logger.info(f"Mensaje agregado a sesión {session_id}. Total: {len(self.conversaciones[session_id])}")
+    
+    def limpiar_sesion(self, session_id: str):
+        """Limpiar historial de una sesión"""
+        if session_id in self.conversaciones:
+            del self.conversaciones[session_id]
+            logger.info(f"Sesión {session_id} limpiada")
+    
+    # ============================================
+    # FUNCIONES EJECUTABLES (FUNCTION CALLING)
+    # ============================================
+    
+    def _calcular_total_campo(self, codigo_reporte: str, campo: str, fecha_inicio: str = None, fecha_fin: str = None) -> Dict:
+        """Calcular suma total de un campo numérico"""
+        try:
+            datos = self.db_manager.consultar_datos_filtrado(
+                codigo_reporte,
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                limite=10000
+            )
+            if not datos:
+                return {"error": "No hay datos disponibles"}
+            
+            df = pd.DataFrame([d['datos'] for d in datos])
+            
+            if campo not in df.columns:
+                return {"error": f"Campo '{campo}' no existe"}
+            
+            if not pd.api.types.is_numeric_dtype(df[campo]):
+                return {"error": f"Campo '{campo}' no es numérico"}
+            
+            total = float(df[campo].sum())
+            promedio = float(df[campo].mean())
+            maximo = float(df[campo].max())
+            minimo = float(df[campo].min())
+            
+            return {
+                "campo": campo,
+                "total": total,
+                "promedio": promedio,
+                "maximo": maximo,
+                "minimo": minimo,
+                "registros": len(datos),
+                "periodo": f"{fecha_inicio or 'inicio'} a {fecha_fin or 'fin'}"
+            }
+        except Exception as e:
+            logger.error(f"Error calculando total: {e}")
+            return {"error": str(e)}
+    
+    def _contar_registros(self, codigo_reporte: str, campo: str = None, valor: str = None, fecha_inicio: str = None, fecha_fin: str = None) -> Dict:
+        """Contar registros con filtros opcionales"""
+        try:
+            datos = self.db_manager.consultar_datos_filtrado(
+                codigo_reporte,
+                fecha_inicio=fecha_inicio,
+                fecha_fin=fecha_fin,
+                limite=10000
+            )
+            
+            if not datos:
+                return {"total": 0, "registros": 0}
+            
+            df = pd.DataFrame([d['datos'] for d in datos])
+            
+            if campo and valor:
+                filtrados = df[df[campo] == valor]
+                return {
+                    "total": len(filtrados),
+                    "registros": len(datos),
+                    "filtro": f"{campo} = {valor}",
+                    "porcentaje": round(len(filtrados) / len(datos) * 100, 2)
+                }
+            
+            return {"total": len(datos), "registros": len(datos)}
+        except Exception as e:
+            logger.error(f"Error contando registros: {e}")
+            return {"error": str(e)}
+    
+    def _agrupar_por_campo(self, codigo_reporte: str, campo_agrupar: str, campo_sumar: str = None, top: int = 10) -> Dict:
+        """Agrupar datos por un campo y opcionalmente sumar otro"""
+        try:
+            datos = self.db_manager.consultar_datos(codigo_reporte, limite=10000)
+            if not datos:
+                return {"error": "No hay datos disponibles"}
+            
+            df = pd.DataFrame([d['datos'] for d in datos])
+            
+            if campo_agrupar not in df.columns:
+                return {"error": f"Campo '{campo_agrupar}' no existe"}
+            
+            if campo_sumar:
+                if campo_sumar not in df.columns:
+                    return {"error": f"Campo '{campo_sumar}' no existe"}
+                
+                resultado = df.groupby(campo_agrupar)[campo_sumar].sum().sort_values(ascending=False).head(top)
+                return {
+                    "agrupado_por": campo_agrupar,
+                    "campo_sumado": campo_sumar,
+                    "top": top,
+                    "resultados": resultado.to_dict()
+                }
+            else:
+                resultado = df[campo_agrupar].value_counts().head(top)
+                return {
+                    "agrupado_por": campo_agrupar,
+                    "top": top,
+                    "resultados": resultado.to_dict()
+                }
+        except Exception as e:
+            logger.error(f"Error agrupando: {e}")
+            return {"error": str(e)}
+    
+    def _comparar_periodos(self, codigo_reporte: str, campo: str, periodo1_inicio: str, periodo1_fin: str, 
+                          periodo2_inicio: str, periodo2_fin: str) -> Dict:
+        """Comparar un campo entre dos períodos"""
+        try:
+            # Período 1
+            datos1 = self.db_manager.consultar_datos_filtrado(
+                codigo_reporte,
+                fecha_inicio=periodo1_inicio,
+                fecha_fin=periodo1_fin,
+                limite=10000
+            )
+            # Período 2
+            datos2 = self.db_manager.consultar_datos_filtrado(
+                codigo_reporte,
+                fecha_inicio=periodo2_inicio,
+                fecha_fin=periodo2_fin,
+                limite=10000
+            )
+            
+            if not datos1 or not datos2:
+                return {"error": "No hay datos suficientes para comparar"}
+            
+            df1 = pd.DataFrame([d['datos'] for d in datos1])
+            df2 = pd.DataFrame([d['datos'] for d in datos2])
+            
+            if campo not in df1.columns or campo not in df2.columns:
+                return {"error": f"Campo '{campo}' no existe"}
+            
+            total1 = float(df1[campo].sum())
+            total2 = float(df2[campo].sum())
+            diferencia = total2 - total1
+            porcentaje_cambio = ((total2 - total1) / total1 * 100) if total1 > 0 else 0
+            
+            return {
+                "campo": campo,
+                "periodo1": {"inicio": periodo1_inicio, "fin": periodo1_fin, "total": total1, "registros": len(datos1)},
+                "periodo2": {"inicio": periodo2_inicio, "fin": periodo2_fin, "total": total2, "registros": len(datos2)},
+                "diferencia": diferencia,
+                "porcentaje_cambio": round(porcentaje_cambio, 2),
+                "tendencia": "↑" if diferencia > 0 else "↓" if diferencia < 0 else "→"
+            }
+        except Exception as e:
+            logger.error(f"Error comparando períodos: {e}")
+            return {"error": str(e)}
+    
+    def _obtener_estadisticas(self, codigo_reporte: str, campo: str) -> Dict:
+        """Obtener estadísticas detalladas de un campo"""
+        try:
+            datos = self.db_manager.consultar_datos(codigo_reporte, limite=10000)
+            if not datos:
+                return {"error": "No hay datos disponibles"}
+            
+            df = pd.DataFrame([d['datos'] for d in datos])
+            
+            if campo not in df.columns:
+                return {"error": f"Campo '{campo}' no existe"}
+            
+            if pd.api.types.is_numeric_dtype(df[campo]):
+                return {
+                    "campo": campo,
+                    "tipo": "numérico",
+                    "total": float(df[campo].sum()),
+                    "promedio": float(df[campo].mean()),
+                    "mediana": float(df[campo].median()),
+                    "desviacion_std": float(df[campo].std()),
+                    "min": float(df[campo].min()),
+                    "max": float(df[campo].max()),
+                    "q25": float(df[campo].quantile(0.25)),
+                    "q75": float(df[campo].quantile(0.75))
+                }
+            else:
+                return {
+                    "campo": campo,
+                    "tipo": "categórico",
+                    "valores_unicos": int(df[campo].nunique()),
+                    "total_registros": len(df),
+                    "top_5": df[campo].value_counts().head(5).to_dict()
+                }
+        except Exception as e:
+            logger.error(f"Error obteniendo estadísticas: {e}")
+            return {"error": str(e)}
+    
+    def _get_available_functions(self):
+        """Definir funciones disponibles para OpenAI Function Calling"""
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "calcular_total_campo",
+                    "description": "Calcula el total, promedio, máximo y mínimo de un campo numérico. Útil para preguntas como '¿cuál es el total facturado?' o '¿cuánto se vendió?'",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "campo": {
+                                "type": "string",
+                                "description": "Nombre del campo numérico a sumar (ej: monto, vr_total, valorservicios)"
+                            },
+                            "fecha_inicio": {
+                                "type": "string",
+                                "description": "Fecha de inicio en formato YYYY-MM-DD (opcional)"
+                            },
+                            "fecha_fin": {
+                                "type": "string",
+                                "description": "Fecha de fin en formato YYYY-MM-DD (opcional)"
+                            }
+                        },
+                        "required": ["campo"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "contar_registros",
+                    "description": "Cuenta registros totales o filtrados por un valor específico",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "campo": {
+                                "type": "string",
+                                "description": "Campo por el cual filtrar (opcional)"
+                            },
+                            "valor": {
+                                "type": "string",
+                                "description": "Valor a buscar en el campo (opcional)"
+                            },
+                            "fecha_inicio": {
+                                "type": "string",
+                                "description": "Fecha de inicio (opcional)"
+                            },
+                            "fecha_fin": {
+                                "type": "string",
+                                "description": "Fecha de fin (opcional)"
+                            }
+                        },
+                        "required": []
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "agrupar_por_campo",
+                    "description": "Agrupa datos por un campo y opcionalmente suma otro. Útil para rankings y top N",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "campo_agrupar": {
+                                "type": "string",
+                                "description": "Campo por el cual agrupar (ej: cliente, estado, tipo)"
+                            },
+                            "campo_sumar": {
+                                "type": "string",
+                                "description": "Campo numérico a sumar por cada grupo (opcional)"
+                            },
+                            "top": {
+                                "type": "integer",
+                                "description": "Número de resultados a retornar (default: 10)"
+                            }
+                        },
+                        "required": ["campo_agrupar"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "comparar_periodos",
+                    "description": "Compara un campo numérico entre dos períodos de tiempo",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "campo": {
+                                "type": "string",
+                                "description": "Campo numérico a comparar"
+                            },
+                            "periodo1_inicio": {
+                                "type": "string",
+                                "description": "Fecha inicio período 1 (YYYY-MM-DD)"
+                            },
+                            "periodo1_fin": {
+                                "type": "string",
+                                "description": "Fecha fin período 1 (YYYY-MM-DD)"
+                            },
+                            "periodo2_inicio": {
+                                "type": "string",
+                                "description": "Fecha inicio período 2 (YYYY-MM-DD)"
+                            },
+                            "periodo2_fin": {
+                                "type": "string",
+                                "description": "Fecha fin período 2 (YYYY-MM-DD)"
+                            }
+                        },
+                        "required": ["campo", "periodo1_inicio", "periodo1_fin", "periodo2_inicio", "periodo2_fin"]
+                    }
+                }
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "obtener_estadisticas",
+                    "description": "Obtiene estadísticas detalladas de un campo (media, mediana, desviación, cuartiles)",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "campo": {
+                                "type": "string",
+                                "description": "Campo del cual obtener estadísticas"
+                            }
+                        },
+                        "required": ["campo"]
+                    }
+                }
+            }
+        ]
+    
+    def _ejecutar_funcion(self, nombre_funcion: str, argumentos: Dict, codigo_reporte: str) -> Dict:
+        """Ejecutar la función correspondiente"""
+        funciones = {
+            "calcular_total_campo": lambda args: self._calcular_total_campo(codigo_reporte, **args),
+            "contar_registros": lambda args: self._contar_registros(codigo_reporte, **args),
+            "agrupar_por_campo": lambda args: self._agrupar_por_campo(codigo_reporte, **args),
+            "comparar_periodos": lambda args: self._comparar_periodos(codigo_reporte, **args),
+            "obtener_estadisticas": lambda args: self._obtener_estadisticas(codigo_reporte, **args)
+        }
+        
+        if nombre_funcion in funciones:
+            return funciones[nombre_funcion](argumentos)
+        else:
+            return {"error": f"Función {nombre_funcion} no encontrada"}
+    
+
     def indexar_datos_reporte(self, codigo_reporte: str):
         """Indexar datos de un reporte en ChromaDB para búsqueda semántica"""
         try:
@@ -67,8 +438,49 @@ class DataAnalysisAgent:
             if not reporte:
                 raise ValueError(f"Reporte {codigo_reporte} no encontrado")
             
+            # Extraer contexto del reporte
+            contexto_reporte = reporte.get('contexto', '')
+            descripcion_reporte = reporte.get('descripcion', '')
+            campos_config = reporte.get('campos', [])
+            # Parsear JSON si viene como cadena
+            if isinstance(campos_config, str):
+                try:
+                    campos_config = json.loads(campos_config)
+                except Exception:
+                    logger.warning("campos_config no es JSON válido; usando lista vacía")
+                    campos_config = []
+
+            # Fallback: si no hay configuración de campos, inferir desde datos
+            if not campos_config:
+                try:
+                    muestra = self.db_manager.consultar_datos(codigo_reporte, limite=1)
+                    if muestra and isinstance(muestra, list):
+                        datos_dict = muestra[0].get('datos', {})
+                        campos_config = [
+                            {
+                                'nombre': k,
+                                'etiqueta': k,
+                                'descripcion': 'Campo inferido desde datos',
+                                'tipo_dato': 'texto'
+                            } for k in datos_dict.keys()
+                        ]
+                        logger.info(f"Campos inferidos: {[c['nombre'] for c in campos_config]}")
+                except Exception as e_inf:
+                    logger.warning(f"No se pudo inferir campos desde datos: {e_inf}")
+            
+            # Construir documentación de campos
+            docs_campos = {}
+            for campo in campos_config:
+                nombre_campo = campo.get('nombre', '')
+                docs_campos[nombre_campo] = {
+                    'etiqueta': campo.get('etiqueta', nombre_campo),
+                    'descripcion': campo.get('descripcion', ''),
+                    'tipo': campo.get('tipo_dato', 'texto'),
+                    'ejemplo': campo.get('ejemplo', '')
+                }
+            
             # Obtener datos
-            datos = self.db_manager.consultar_datos(codigo_reporte, limite=1000)
+            datos = self.db_manager.consultar_datos(codigo_reporte, limite=5000)
             
             if not datos:
                 logger.info(f"No hay datos para indexar en {codigo_reporte}")
@@ -78,7 +490,12 @@ class DataAnalysisAgent:
             collection_name = f"reporte_{codigo_reporte.replace(' ', '_')}"
             collection = self.chroma_client.get_or_create_collection(
                 name=collection_name,
-                metadata={"reporte": codigo_reporte}
+                metadata={
+                    "reporte": codigo_reporte,
+                    "nombre": reporte.get('nombre', ''),
+                    "contexto": contexto_reporte[:500] if contexto_reporte else '',
+                    "descripcion": descripcion_reporte[:500] if descripcion_reporte else ''
+                }
             )
             
             # Preparar documentos para indexar
@@ -86,11 +503,56 @@ class DataAnalysisAgent:
             metadatas = []
             ids = []
             
+            # DOCUMENTO MAESTRO: Contexto completo del reporte (siempre se indexa primero)
+            documento_maestro = f"""DOCUMENTACIÓN DEL REPORTE: {reporte['nombre']}
+            
+📋 CÓDIGO: {codigo_reporte}
+
+📝 DESCRIPCIÓN:
+{descripcion_reporte}
+
+🎯 CONTEXTO Y PROPÓSITO:
+{contexto_reporte}
+
+📊 ESTRUCTURA DE CAMPOS:
+"""
+            for campo in campos_config:
+                documento_maestro += f"\n• {campo.get('etiqueta', campo.get('nombre'))}"
+                documento_maestro += f"\n  - Nombre técnico: {campo.get('nombre')}"
+                documento_maestro += f"\n  - Tipo: {campo.get('tipo_dato', 'texto')}"
+                if campo.get('descripcion'):
+                    documento_maestro += f"\n  - Descripción: {campo.get('descripcion')}"
+                if campo.get('ejemplo'):
+                    documento_maestro += f"\n  - Ejemplo: {campo.get('ejemplo')}"
+                documento_maestro += "\n"
+            
+            documents.append(documento_maestro)
+            metadatas.append({
+                'tipo': 'documentacion_reporte',
+                'reporte': codigo_reporte,
+                'es_maestro': True
+            })
+            ids.append(f"{codigo_reporte}_MAESTRO")
+            
+            # Agregar registros de datos
             for idx, registro in enumerate(datos):
-                # Convertir datos a texto descriptivo
+                # Convertir datos a texto descriptivo con contexto
                 datos_dict = registro['datos']
-                texto = f"Registro del reporte {reporte['nombre']}:\n"
-                texto += "\n".join([f"{k}: {v}" for k, v in datos_dict.items() if v is not None])
+                
+                # Encabezado con contexto del reporte
+                texto = f"Reporte: {reporte['nombre']}\n"
+                if contexto_reporte:
+                    texto += f"Contexto: {contexto_reporte[:200]}\n"
+                texto += "\n--- Registro ---\n"
+                
+                # Agregar cada campo con su descripción
+                for k, v in datos_dict.items():
+                    if v is not None:
+                        # Usar documentación del campo si existe
+                        if k in docs_campos and docs_campos[k].get('descripcion'):
+                            texto += f"{docs_campos[k]['etiqueta']} ({docs_campos[k]['descripcion']}): {v}\n"
+                        else:
+                            texto += f"{k}: {v}\n"
                 
                 documents.append(texto)
                 metadatas.append({
@@ -178,6 +640,11 @@ class DataAnalysisAgent:
             if not datos:
                 return {'error': 'No hay datos para analizar'}
             
+            # Obtener contexto del reporte
+            contexto_reporte = reporte.get('contexto', '')
+            descripcion_reporte = reporte.get('descripcion', '')
+            campos_config = reporte.get('campos', [])
+            
             # Convertir a DataFrame para estadísticas
             df_datos = pd.DataFrame([d['datos'] for d in datos])
             
@@ -198,6 +665,13 @@ class DataAnalysisAgent:
             if tipo_analisis == 'general':
                 prompt = f"""Analiza los siguientes datos del reporte "{reporte['nombre']}":
 
+📋 CONTEXTO DEL REPORTE:
+{contexto_reporte if contexto_reporte else 'No especificado'}
+
+📝 DESCRIPCIÓN:
+{descripcion_reporte if descripcion_reporte else 'No especificada'}
+
+📊 DATOS:
 Total de registros: {resumen['total_registros']}
 Columnas: {', '.join(resumen['columnas'])}
 
@@ -208,25 +682,28 @@ Muestra de datos:
 {json.dumps(resumen['muestra_datos'], indent=2)}
 
 Proporciona un análisis detallado que incluya:
-1. Resumen ejecutivo
-2. Insights principales
+1. Resumen ejecutivo (considerando el contexto del reporte)
+2. Insights principales basados en el propósito del reporte
 3. Tendencias identificadas
-4. Recomendaciones
+4. Recomendaciones específicas para este tipo de datos
 5. Alertas o anomalías (si las hay)
 
 Responde en español y de forma clara y profesional."""
 
             elif tipo_analisis == 'tendencias':
                 prompt = f"""Analiza las tendencias en los datos del reporte "{reporte['nombre']}".
+
+📋 CONTEXTO DEL REPORTE:
+{contexto_reporte if contexto_reporte else 'No especificado'}
                 
 Datos disponibles: {resumen['total_registros']} registros
 Columnas: {', '.join(resumen['columnas'])}
 
 Identifica:
-1. Tendencias temporales
+1. Tendencias temporales relevantes al contexto del reporte
 2. Patrones recurrentes  
-3. Proyecciones futuras
-4. Cambios significativos
+3. Proyecciones futuras basadas en el propósito del reporte
+4. Cambios significativos que requieren atención
 
 Datos de muestra:
 {json.dumps(resumen['muestra_datos'], indent=2)}"""
@@ -234,11 +711,17 @@ Datos de muestra:
             elif tipo_analisis == 'anomalias':
                 prompt = f"""Detecta anomalías en los datos del reporte "{reporte['nombre']}".
 
+📋 CONTEXTO DEL REPORTE:
+{contexto_reporte if contexto_reporte else 'No especificado'}
+
 Estadísticas:
 {json.dumps(numericas, indent=2)}
 
-Identifica valores atípicos, inconsistencias o datos sospechosos.
-Muestra: {json.dumps(resumen['muestra_datos'], indent=2)}"""
+Identifica valores atípicos, inconsistencias o datos sospechosos que no se ajusten al propósito del reporte.
+Considera el contexto del reporte para determinar qué es anormal.
+
+Muestra de datos: 
+{json.dumps(resumen['muestra_datos'], indent=2)}"""
             
             # Llamar a OpenAI
             response = self.openai_client.chat.completions.create(
@@ -326,119 +809,143 @@ Capacidades del sistema:
         
         return graficos
     
-    def responder_pregunta(self, codigo_reporte: str, pregunta: str):
-        """Responder pregunta sobre los datos usando RAG + LLM"""
+    def responder_pregunta(self, codigo_reporte: str, pregunta: str, session_id: str = "default"):
+        """Responder pregunta sobre los datos usando RAG + LLM + Function Calling + Memoria"""
         if not self.openai_client:
             return {'error': 'OpenAI no configurado'}
         
         try:
-            # Buscar contexto relevante
-            contexto = self.consultar_con_lenguaje_natural(codigo_reporte, pregunta, limite=5)
-            
             # Obtener info del reporte
             reporte = self.db_manager.obtener_reporte(codigo_reporte)
             
-            # Obtener estadísticas generales
-            datos = self.db_manager.consultar_datos(codigo_reporte, limite=1000)
-            df_datos = pd.DataFrame([d['datos'] for d in datos])
+            # Obtener contexto y descripción del reporte
+            contexto_reporte = reporte.get('contexto', 'No especificado')
+            descripcion_reporte = reporte.get('descripcion', '')
+            campos_config = reporte.get('campos', [])
             
-            # Detectar si se solicita un gráfico
-            palabras_grafico = ['gráfico', 'grafico', 'gráfica', 'grafica', 'chart', 'visualiza', 'visualización', 'muestra', 'diagrama', 'top', 'ranking']
-            solicita_grafico = any(palabra in pregunta.lower() for palabra in palabras_grafico)
+            # Documentación de campos
+            docs_campos_texto = "\n".join([
+                f"  • {c.get('etiqueta', c.get('nombre'))}: {c.get('descripcion', 'Sin descripción')} (Tipo: {c.get('tipo_dato', c.get('tipo', 'texto'))})"
+                for c in campos_config
+            ])
             
-            # Preparar estadísticas útiles del DataFrame
-            stats_columnas = {}
-            for col in df_datos.columns:
-                if pd.api.types.is_numeric_dtype(df_datos[col]):
-                    stats_columnas[col] = {
-                        'tipo': 'numérico',
-                        'total': float(df_datos[col].sum()),
-                        'promedio': float(df_datos[col].mean()),
-                        'max': float(df_datos[col].max()),
-                        'min': float(df_datos[col].min())
-                    }
-                else:
-                    valores_unicos = df_datos[col].nunique()
-                    stats_columnas[col] = {
-                        'tipo': 'texto',
-                        'valores_unicos': int(valores_unicos),
-                        'top_5': df_datos[col].value_counts().head(5).to_dict() if valores_unicos < 100 else None
-                    }
+            # Obtener lista de campos disponibles
+            campos_disponibles = [c.get('nombre') for c in campos_config]
             
-            # Preparar prompt con contexto
-            prompt = f"""Responde la siguiente pregunta sobre el reporte "{reporte['nombre']}":
+            # Preparar contexto del sistema con información del reporte
+            system_context = f"""Eres un analista de datos experto con capacidad de ejecutar funciones para analizar datos.
 
-PREGUNTA: {pregunta}
+🎯 REPORTE ACTUAL: {reporte['nombre']}
+📋 CÓDIGO: {codigo_reporte}
 
-DATOS DISPONIBLES:
-- Total de registros analizables: {len(datos)}
-- Columnas: {', '.join(df_datos.columns.tolist())}
+CONTEXTO DEL NEGOCIO:
+{contexto_reporte}
 
-ESTADÍSTICAS POR COLUMNA:
-{json.dumps(stats_columnas, indent=2, ensure_ascii=False, default=str)}
+📊 CAMPOS DISPONIBLES:
+{docs_campos_texto}
 
-MUESTRA DE DATOS (primeros 5 registros):
-{df_datos.head(5).to_dict('records')}
+🔧 CAPACIDADES:
+✅ Puedes ejecutar funciones para calcular totales, promedios, agrupaciones, comparaciones
+✅ Puedes filtrar por fechas y criterios específicos
+✅ Puedes hacer análisis comparativos entre períodos
+✅ Tienes acceso completo a los datos del reporte
 
-INSTRUCCIONES:
-- Tienes acceso COMPLETO a {len(datos)} registros del reporte
-- Puedes calcular sumas, promedios, conteos, agrupaciones, etc.
-- Si necesitas hacer un análisis, HAZLO con los datos disponibles
-- Si la pregunta pide gráficos o visualizaciones, confirma que puedes generarlos
-- Sé específico con números y resultados
-- Responde en español de forma clara y profesional"""
+💡 INSTRUCCIONES:
+- USA las funciones disponibles para obtener datos precisos
+- Para cálculos, SIEMPRE usa calcular_total_campo
+- Para rankings/tops, usa agrupar_por_campo  
+- Para comparaciones temporales, usa comparar_periodos
+- Responde en español con números específicos
+- Presenta resultados de forma clara y profesional
+- Si necesitas fechas y no las especifican, pregunta o asume el mes actual (febrero 2026)
 
+CAMPOS NUMÉRICOS COMUNES: {', '.join([c.get('nombre') for c in campos_config if c.get('tipo_dato') in ['numero', 'decimal'] or c.get('tipo') in ['numero', 'decimal']])}
+"""
+
+            # Obtener historial de conversación
+            historial = self.obtener_historial(session_id)
+            
+            # Construir mensajes para OpenAI
+            messages = [{"role": "system", "content": system_context}]
+            messages.extend(historial)  # Agregar historial previo
+            messages.append({"role": "user", "content": pregunta})
+            
+            # Primera llamada con function calling
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o",
-                messages=[
-                    {"role": "system", "content": """Eres un analista de datos experto con acceso COMPLETO a los datos del reporte.
-
-CAPACIDADES CONFIRMADAS:
-✅ Tienes acceso a TODOS los registros del reporte (no solo una muestra)
-✅ Puedes calcular estadísticas: sumas, promedios, máximos, mínimos, conteos
-✅ Puedes hacer agrupaciones y análisis complejos
-✅ Puedes crear visualizaciones de datos usando formato de texto
-
-FORMATO DE RESPUESTA:
-❌ NUNCA describas el proceso paso a paso
-❌ NUNCA muestres código Python ni menciones funciones técnicas
-❌ NUNCA digas "voy a generar", "he generado", "puedes descargar"
-✅ SOLO presenta los RESULTADOS finales
-✅ Usa formato limpio: títulos, listas, tablas de texto, emojis
-✅ Si piden gráfico: MUÉSTRALO en formato visual de texto (barras con caracteres, tablas)
-✅ Si piden Excel: Entonces di "Preparando archivo Excel para descarga..."
-
-EJEMPLO DE GRÁFICO EN TEXTO:
-"📊 Distribución de Facturación por Estado:
-
-Activo    ████████████████████ $45,234,567 (67%)
-Inactivo  ██████████ $22,118,433 (33%)
-
-💡 El estado 'Activo' representa dos tercios del valor total."
-
-EJEMPLO INCORRECTO:
-"He generado un gráfico de barras... puedes descargar el archivo Excel..."
-
-INSTRUCCIONES CRÍTICAS:
-- NUNCA digas "no tengo acceso" - SÍ tienes acceso completo
-- NUNCA digas "necesito más información" - toda la info está en el contexto
-- SIEMPRE realiza cálculos cuando se te pidan
-- Responde SOLO con resultados, sin describir procesos
-- Responde en español con números específicos y precisos"""},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.2,
-                max_tokens=1500
+                messages=messages,
+                tools=self._get_available_functions(),
+                tool_choice="auto",
+                temperature=0.2
             )
             
-            respuesta = response.choices[0].message.content
+            response_message = response.choices[0].message
+            tool_calls = response_message.tool_calls
             
-            resultado = {
-                'pregunta': pregunta,
-                'respuesta': respuesta,
-                'contexto_usado': len(contexto['resultados']),
-                'timestamp': datetime.now().isoformat()
-            }
+            # Si el modelo decidió usar funciones
+            if tool_calls:
+                # Agregar la respuesta del asistente al historial
+                messages.append(response_message)
+                
+                # Ejecutar cada función solicitada
+                for tool_call in tool_calls:
+                    function_name = tool_call.function.name
+                    function_args = json.loads(tool_call.function.arguments)
+                    
+                    logger.info(f"🔧 Ejecutando función: {function_name} con args: {function_args}")
+                    
+                    # Ejecutar la función
+                    function_response = self._ejecutar_funcion(function_name, function_args, codigo_reporte)
+                    
+                    # Agregar resultado de la función a los mensajes
+                    messages.append({
+                        "tool_call_id": tool_call.id,
+                        "role": "tool",
+                        "name": function_name,
+                        "content": json.dumps(function_response, ensure_ascii=False)
+                    })
+                
+                # Segunda llamada para obtener respuesta final con los resultados de las funciones  
+                second_response = self.openai_client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=messages,
+                    temperature=0.2
+                )
+                
+                respuesta_final = second_response.choices[0].message.content
+                
+                # Guardar en historial
+                self.agregar_mensaje(session_id, "user", pregunta)
+                self.agregar_mensaje(session_id, "assistant", respuesta_final)
+                
+                return {
+                    'pregunta': pregunta,
+                    'respuesta': respuesta_final,
+                    'funciones_ejecutadas': [tc.function.name for tc in tool_calls],
+                    'session_id': session_id,
+                    'timestamp': datetime.now().isoformat()
+                }
+            else:
+                # No se usaron funciones, respuesta directa
+                respuesta_final = response_message.content
+                
+                # Guardar en historial
+                self.agregar_mensaje(session_id, "user", pregunta)
+                self.agregar_mensaje(session_id, "assistant", respuesta_final)
+                
+                return {
+                    'pregunta': pregunta,
+                    'respuesta': respuesta_final,
+                    'funciones_ejecutadas': [],
+                    'session_id': session_id,
+                    'timestamp': datetime.now().isoformat()
+                }
+            
+        except Exception as e:
+            logger.error(f"Error respondiendo pregunta: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {'error': str(e), 'traceback': traceback.format_exc()}
             
             # Generar gráfico si se solicitó
             if solicita_grafico:

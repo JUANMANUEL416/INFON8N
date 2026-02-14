@@ -218,6 +218,21 @@ class DatabaseManager:
         finally:
             cur.close()
             conn.close()
+
+    def obtener_reporte_admin(self, codigo: str) -> Optional[Dict]:
+        """Obtener configuración de un reporte sin filtrar por estado (uso admin)."""
+        conn = self.get_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            cur.execute('''
+                SELECT * FROM reportes_config 
+                WHERE codigo = %s
+            ''', (codigo,))
+            result = cur.fetchone()
+            return dict(result) if result else None
+        finally:
+            cur.close()
+            conn.close()
     
     def listar_reportes(self, solo_activos=True) -> List[Dict]:
         """Listar todos los reportes"""
@@ -261,6 +276,9 @@ class DatabaseManager:
             if 'relaciones' in datos:
                 campos_update.append('relaciones = %s')
                 valores.append(json.dumps(datos['relaciones']))
+            if 'activo' in datos:
+                campos_update.append('activo = %s')
+                valores.append(datos['activo'])
             
             campos_update.append('updated_at = CURRENT_TIMESTAMP')
             valores.append(codigo)
@@ -786,4 +804,113 @@ class DatabaseManager:
             raise
         finally:
             cur.close()
+            conn.close()    
+    # ============================================
+    # MÉTODOS PARA CONTROL DE PERIODOS
+    # ============================================
+    
+    def crear_reporte_config(
+        self,
+        nombre: str,
+        codigo: str,
+        descripcion: str,
+        campos: List[Dict],
+        categoria: str = 'general',
+        tipo_periodo: str = 'libre',
+        campo_fecha: str = None,
+        requiere_periodo: bool = False,
+        validacion_ia: Dict = None
+    ) -> Dict:
+        """
+        Crear nuevo reporte con configuración de periodo
+        """
+        conn = self.get_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        try:
+            cur.execute('''
+                INSERT INTO reportes_config 
+                (nombre, codigo, descripcion, campos, categoria, 
+                 tipo_periodo, campo_fecha, requiere_periodo, validacion_ia, estado_validacion)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING *
+            ''', (
+                nombre, codigo, descripcion, json.dumps(campos), categoria,
+                tipo_periodo, campo_fecha, requiere_periodo, 
+                json.dumps(validacion_ia) if validacion_ia else None,
+                'validado' if validacion_ia and validacion_ia.get('valido') else 'pendiente'
+            ))
+            
+            result = cur.fetchone()
+            conn.commit()
+            
+            return dict(result) if result else None
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Error creando reporte_config: {e}")
+            raise
+        finally:
+            cur.close()
             conn.close()
+    
+    def obtener_reporte_por_codigo(self, codigo: str) -> Optional[Dict]:
+        """
+        Obtener configuración de reporte por código
+        """
+        conn = self.get_connection()
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        try:
+            cur.execute('''
+                SELECT * FROM reportes_config 
+                WHERE codigo = %s
+            ''', (codigo,))
+            
+            result = cur.fetchone()
+            return dict(result) if result else None
+            
+        finally:
+            cur.close()
+            conn.close()
+    
+    def ejecutar_query(self, query: str, params: tuple = None, commit: bool = False):
+        """
+        Ejecutar query SQL personalizada
+        """
+        conn = self.get_connection()
+        cur = conn.cursor()
+        
+        try:
+            if params:
+                cur.execute(query, params)
+            else:
+                cur.execute(query)
+            
+            # Si es SELECT, devolver resultados
+            if query.strip().upper().startswith('SELECT') or 'RETURNING' in query.upper():
+                results = cur.fetchall()
+            else:
+                results = None
+            
+            if commit:
+                conn.commit()
+            
+            return results
+            
+        except Exception as e:
+            if commit:
+                conn.rollback()
+            logger.error(f"Error ejecutando query: {e}")
+            raise
+        finally:
+            cur.close()
+            conn.close()
+    
+    def commit(self):
+        """
+        Commit para transacciones múltiples
+        Nota: Este método necesita refactor para manejar conexiones persistentes
+        """
+        # Por ahora, el commit se maneja en ejecutar_query con commit=True
+        pass
